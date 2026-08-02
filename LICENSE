@@ -1,0 +1,59 @@
+DIMENSION-LENS — ライセンス
+
+このリポジトリは、コードと作品部分で条件が異なります。
+
+
+────────────────────────────────────────────────────────────
+1. コード — MIT License
+────────────────────────────────────────────────────────────
+
+対象: src/ 以下の TypeScript / GLSL / CSS、設定ファイル、ビルドスクリプト。
+
+Copyright (c) 2026 ops324
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+────────────────────────────────────────────────────────────
+2. 作品部分 — All rights reserved
+────────────────────────────────────────────────────────────
+
+対象: SPEC.md および README.md の本文、src/ui/copy.ts の文言（章名・一行説明・
+タグライン・声明文を含む）、public/og.jpg、視覚設計としての配色・書体選択・レイアウト。
+
+これらの複製・改変・再配布は許諾していません。コードを MIT で利用する場合も、
+文言と作品部分は含めずに使ってください。
+
+
+────────────────────────────────────────────────────────────
+3. 移植元 — ops324/dimension
+────────────────────────────────────────────────────────────
+
+src/math/ 以下および src/ui/ の一部は、姉妹作 ops324/dimension から複製しています。
+各ファイル冒頭の VENDORED_FROM ヘッダに、出自のパスとコミット SHA を記録しています。
+移植元リポジトリは同一著作者によるもので、上記 1. と同じ条件が及びます。
+
+
+────────────────────────────────────────────────────────────
+4. 第三者
+────────────────────────────────────────────────────────────
+
+three.js — MIT License, Copyright (c) 2010-2025 three.js authors
+@fontsource で配布されるフォント群 — 各フォントのライセンスに従います
+（Unbounded / Zen Kaku Gothic New / Space Mono はいずれも SIL Open Font License 1.1）。
