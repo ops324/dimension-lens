@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#05060f" />
+    <!--
+      ?d= / ?scale= を含む完全な URL が、外向きリンク(フッタの GitHub リンクなど)を
+      1本置いた瞬間に Referer として出ていくのを止める。Phase 3 でリンクを足す前に、
+      いま入れておく方が確実。
+    -->
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      name="description"
+      content="あなたの写真は (縦, 横, 明るさ, 赤み, 青み) ── もともと五次元の曲面だ。一本のスライダーで次元を上り下りし、色相回転を本物の回転として見る。画像は端末から出ない。"
+    />
+    <title>DIMENSION-LENS｜写真を次元にかける</title>
+
+    <!--
+      Content-Security-Policy は vite.config.ts の cspPlugin が **本番ビルドにだけ**
+      ここへ注入する。dev は HMR の ws: と両立しないため入らない ──
+      プライバシー検証は必ず `npm run preview`(:4173) で行うこと。
+
+      OGP は Phase 3(公開時)に入れる。存在しない og.jpg を今から参照しない。
+    -->
+
+    <noscript>
+      <style>
+        #boot-noscript {
+          display: block !important;
+        }
+      </style>
+    </noscript>
+  </head>
+  <body>
+    <canvas id="gl" role="img" aria-label="添付した画像を五次元の曲面として描く可視化。現在の状態は読み出し欄に表示されます"></canvas>
+
+    <!-- UI は Phase 1a 以降でここへマウントされる -->
+    <div id="ui"></div>
+
+    <p id="boot-noscript" hidden>
+      この作品は JavaScript で画像をブラウザ内処理します。JavaScript
+      が無効のあいだ、何も送信されない代わりに、何も表示できません。
+    </p>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
