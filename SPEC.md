@@ -1,6 +1,7 @@
 # DIMENSION-LENS 仕様書
 
-> 版: Phase 0（骨組みと、測る道具）
+> 版: **Phase 0 時点**（骨組みと、測る道具 —— [#1](https://github.com/ops324/dimension-lens/pull/1) マージ済み）
+> 公開: <https://ops324.github.io/dimension-lens/>（現状は空ページ。Phase 1a まで見るものは無い）
 
 ---
 
@@ -30,7 +31,8 @@ C を C と書けることがこの作品の品質であって、C を A の書�
 | バンドルに通信 API が無い | **A** | `privacy.test.ts`、allowlist は空。**初回実行で vite の modulepreload ポリフィルの `fetch` を捕まえた**（§6.2） |
 | CSP が本番ビルドに入り、`default-src`/`img-src`/`base-uri` を閉じている | **A** | 同（`dist/index.html` を検査） |
 | CSP 下で自前の JS が実際に読める | **A** | preview(:4173) 実測。`data-lens="booted"`、`<script src="/assets/index-*.js">`、コンソールエラー 0 |
-| CSP が fetch・**画像経由の送信**・WebSocket を実際に阻む | **A** | preview 実測。violation 3件（§6.2） |
+| CSP が fetch・**画像経由の送信**・WebSocket を実際に阻む | **A** | preview 実測。violation 3件（§6.3） |
+| **公開経路が通っている** | **A** | GitHub Pages 実測（§7.3）。サブパス配信で `base: './'` が効き、CSP 下で JS が読め、コンソールエラー 0 |
 | `Texture` 既定は `NoColorSpace` / `color_vertex` はデコードしない | **B** | three r185 実ソースで確認（行番号まで一致）。LENS では未実行 |
 | `NeutralToneMapping` は恒等ではない（無条件に 0.04 を引く） | **B** | GLSL 実ソースで確認。→ 錨では `NoToneMapping` を使う |
 | 軸ごと正規化は (3,4) を色相回転でなくする | **B** | `D⁻¹RD ∉ SO(2)`（s_a≠s_b）は代数的に確定。→ ブロック等方正規化 |
@@ -338,6 +340,31 @@ Phase 1 以降で追加: sRGB 区分関数、OKLab（+ P3 参照値）、**色�
 各測定には**予算**を付ける。予算の無い測定は「比べて数字を眺める」であり、A を生産できない。
 測定が落ちたら当該フェーズをマージしない。予算を緩めるのは、緩める根拠をここに書いたときだけ。
 
+### 7.3 公開経路の実測（水準 A・Phase 0）
+
+<https://ops324.github.io/dimension-lens/> にて:
+
+| 確認項目 | 結果 |
+|---|---|
+| CSP meta が本番ページに載っている | ✅ |
+| `<script src="./assets/index-*.js">` が読まれた | ✅ `data-lens="booted"` |
+| サブパス配信で相対パスが解決する（`base: './'`） | ✅ `/dimension-lens/assets/...` |
+| コンソールエラー | **0** |
+
+**「JS が読めること」を毎フェーズ確認するのは形式ではない。** Phase 0 のエントリは一度、
+中身が全て `import.meta.env.DEV` の内側だったせいで丸ごと tree-shake され、
+vite が `<script>` タグごと出力から落とした。そのままなら
+「自前の JS が `script-src 'self'` の下で実際に読めるか」を**一度も検証しないまま**
+「公開経路が揃った」と言うことになっていた。本番でも消えない痕跡（`data-lens="booted"`）は
+そのために置いてある。
+
+### 7.4 既知の CI 負債
+
+`actions/upload-pages-artifact@v3` が内部で `actions/upload-artifact@v4` を呼んでおり、
+GitHub の Node 20 廃止アナウンスで警告が出る。上流の複合アクション内なので直接は直せない。
+`actions/checkout` と `actions/setup-node` は自前で参照しているので、次のインフラ PR で上げる。
+現時点では警告であって失敗ではない。
+
 ---
 
 ## 8. 開発の進め方
@@ -365,8 +392,8 @@ PR 本文には必ず:
 
 | | 内容 | 状態 |
 |---|---|---|
-| **0** | 骨組みと測る道具（CI・CSP・移植・ベンチ・DEV フック） | **本 PR** |
-| 1a | 数と光を通す（ingest → lift → 点群 → 線形HDR + OutputPass、`dimLevel ∈ [2,5]`） | |
+| **0** | 骨組みと測る道具（CI・CSP・移植・ベンチ・DEV フック） | ✅ [#1](https://github.com/ops324/dimension-lens/pull/1) |
+| 1a | 数と光を通す（ingest → lift → 点群 → 線形HDR + OutputPass、`dimLevel ∈ [2,5]`） | 次 |
 | 1b | 潰し（列平均バッファ・`sampleWeight`・`[0,5]` 全域・平均色） | |
 | 1c | 取り込みの頑健性と空状態（HEIC・EXIF・40MP・退化・`copy.ts` 全文） | |
 | 2 | 光の質（bloom/grade 再測定・`CompressPass`・quality・光過敏） | |
