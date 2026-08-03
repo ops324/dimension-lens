@@ -33,13 +33,13 @@ C を C と書けることがこの作品の品質であって、C を A の書�
 | CSP 下で自前の JS が実際に読める | **A** | preview(:4173) 実測。`data-lens="booted"`、`<script src="/assets/index-*.js">`、コンソールエラー 0 |
 | CSP が fetch・**画像経由の送信**・WebSocket を実際に阻む | **A** | preview 実測。violation 3件（§6.3） |
 | **公開経路が通っている** | **A** | GitHub Pages 実測（§7.3）。サブパス配信で `base: './'` が効き、CSP 下で JS が読め、コンソールエラー 0 |
-| `Texture` 既定は `NoColorSpace` / `color_vertex` はデコードしない | **B** | three r185 実ソースで確認（行番号まで一致）。LENS では未実行 |
-| `NeutralToneMapping` は恒等ではない（無条件に 0.04 を引く） | **B** | GLSL 実ソースで確認。→ 錨では `NoToneMapping` を使う |
+| `Texture` 既定は `NoColorSpace` / `color_vertex` はデコードしない | **B** | `node_modules/three/src/textures/Texture.js:48` と `ShaderChunk/color_vertex.glsl.js` を自分で開いて確認。LENS では未実行 |
+| `NeutralToneMapping` は恒等ではない | **A** | GLSL 実ソース + 数値実測（§4.5）。sRGB 128→**116**、63→**33**、200→**194** |
+| **half-float 加算の飽和天井は 0.03125** | **A** | `Float16Array` で実測（§4.6）。実際の重なり数 326/489 では**飽和しない**ことも確認 |
+| **ブラウザの縮小はガンマ空間平均** | **A**（Chrome 148） | 黒白2px→1px が **128**（リニア光平均なら 188）。`drawImage` と `createImageBitmap({resizeWidth})` の両方（§4.7）。他ブラウザは未測定 |
 | 軸ごと正規化は (3,4) を色相回転でなくする | **B** | `D⁻¹RD ∉ SO(2)`（s_a≠s_b）は代数的に確定。→ ブロック等方正規化 |
 | clear color 漏れの機序 | **B** | 親に実測（`#05060f` が `rgb(22,27,58)` として届く）。LENS では未測定 |
 | 加算ブレンドが列平均そのものである | **B** | 線形 HDR ターゲット上でのみ真。Phase 1b の #3/#4 を通せば A |
-| ブラウザのリサイズがガンマ空間平均であること | **B** | 機構確認。実測すれば A |
-| half-float 飽和の天井 | **B** | 機序は確定、数は指数依存で 0.031〜0.0625 の帯 |
 | postfx 定数（bloom 閾値ほか）の再測定が必要 | **C（自覚あり）** | Phase 2 |
 | `dimLevel=2` が「あなたの写真そのもの」 | **C** | Phase 1a のアンカー窓 + 忠実性測定 1a〜1d で A |
 | **「画像は端末から出ません」** | **B**（上限） | 静的検査(§6.2) + violation 実測(§6.3) で B に到達。真の A は原理的に不可能 —— 「出ない」は無限の反証 |
@@ -188,7 +188,77 @@ Apple M1 Max / MacBookPro18,4 / Node 24.13.0 / vitest bench。`mean` がその�
 
 GPU 経路にすれば 1.9 MB/frame のアップロードが 0 になる。数字は正確に持っておく。
 
-### 4.5 透視カスケードの真の不変条件
+### 4.5 `NeutralToneMapping` を使わない —— 実測（水準 A）
+
+計画初版には「Neutral は ~0.8 以下でほぼ恒等・色相保存」と書いてあった。**偽である。**
+r185 の実装（`ShaderChunk/tonemapping_pars_fragment.glsl.js`）はこう書かれている:
+
+```glsl
+const float StartCompression = 0.8 - 0.04;   // = 0.76
+float x = min( color.r, min( color.g, color.b ) );
+float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+color -= offset;                              // ← 早期 return の "前"、無条件
+float peak = max( color.r, max( color.g, color.b ) );
+if ( peak < StartCompression ) return color;
+```
+
+ブラックポイントの減算が早期 return の**前**にあるので、低輝度側でも必ず 0.04 が引かれる。
+自分で数値を通した結果:
+
+| 入力 sRGB | リニア | Neutral 後の sRGB | 差 |
+|---|---|---|---|
+| 128（中間調） | 0.2159 | **116** | −12 |
+| 63（暗部） | 0.0497 | **33** | −30 |
+| 200 | 0.5776 | **194** | −6 |
+
+暗部はほぼ半分に潰れる。`dimLevel=2` は本作が乗っている唯一の錨で、忠実性テストは
+読み戻して元 RGB と比較する設計なので、**正しく実装しても必ず落ちる**。
+→ `renderer.toneMapping = NoToneMapping` 固定。加算が 1.0 を超える高 dimLevel 用の圧縮は
+`CompressPass`（OutputPass の前、リニア空間、`uStrength` を dimLevel で駆動）が担う。
+
+### 4.6 half-float 飽和 —— 実測（水準 A）
+
+`Float16Array` で δ を n 回足して確かめた:
+
+| n | δ | 合計 | |
+|---|---|---|---|
+| 65,536 | 1.53e−5 | 0.03125 | **0.03125 で停止** |
+| 106,374 | 9.40e−6 | 0.03125 | **0.03125 で停止** |
+| 326（列内の重なり） | 3.07e−3 | 0.985 | 飽和なし |
+| 489（列平均バッファ） | 2.04e−3 | 0.969 | 飽和なし |
+
+**天井は 0.03125 = 2⁻⁵**（計画では「0.031〜0.0625 の帯」と幅を持たせていた。実測は下端）。
+`A + δ` は δ = ulp(A)/2 で ties-to-even により丸め戻るので、δ=2⁻¹⁶ なら停止点は
+ulp = 2⁻¹⁵ すなわち A = 2⁻⁵。停止点は n に依らない。
+
+**そして下の2行が二重バッファ設計の実測による裏付けである** —— 実際の重なり数では飽和しない。
+ただし n=489 で 0.969（3.1% の undershoot）が出ており、これは飽和ではなく累積丸め誤差。
+`dimLevel=0` の平均色はリニア光で約 3% 暗く出る。ΔE00 ≤ 3.0 の予算内だが、
+**予算を使い切る要因として数えておくこと**（Phase 1b で実測する）。
+
+### 4.7 取り込み時の縮小はガンマ空間平均 —— 実測（水準 A / Chrome 148）
+
+黒 1px と白 1px の 2×1 を 1×1 へ縮小して読み戻した:
+
+| 経路 | 結果 |
+|---|---|
+| `drawImage(src, 0,0,1,1)`（`imageSmoothingQuality: 'high'`） | **128** |
+| `createImageBitmap(blob, {resizeWidth:1, resizeHeight:1, resizeQuality:'high'})` | **128** |
+| 期待値: ガンマ空間平均 | 128 |
+| 期待値: リニア光平均 | 188 |
+
+**リニア光ではリサンプルされない。** 50/50 の黒白領域は真のリニア平均 0.5（`#BCBCBC`）に対し
+`#808080` として返る —— リニア光で 2.3 倍の誤差。
+
+→ 最初の縮小（長辺 2048px 上限）だけブラウザに任せ、**それ以降の縮約は全部リニア光で自分でやる**。
+`columnMeans` / `globalMean` は**正準リニアバッファから**計算する（グリッドからではない）。
+2048px 時点の残差は近傍が強く相関しているため小さいが、ゼロではない。
+
+なお `createImageBitmap` の resize オプションは Chrome で実際に効いた（返却 1×1）。
+Safari は**未知のディクショナリメンバを黙って無視する**ので、例外ではなく
+`bitmap.width` を要求値と比較して機能検出すること。
+
+### 4.8 透視カスケードの真の不変条件
 
 よくある誤解は「‖x‖ ≤ 1 に正規化してあるから安全」。これが保証するのは**第1段だけ**である。
 各段は座標を `f = dist/(dist−p[d])` 倍に増幅するので、第2段の入力ノルムは 1 ではなく

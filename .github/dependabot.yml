@@ -1,0 +1,23 @@
+# GitHub Actions のバージョン追随を自動化する。
+#
+# 動機は Phase 0 で実際に起きた失敗にある ── 姉妹作 dimension の deploy.yml を
+# そのまま複製したところ、4 つのアクションがいずれも 2〜3 メジャー遅れており
+# (checkout v4 対 v7 など)、Node 20 廃止の警告が出るまで気づかなかった。
+# しかも一度は「上流の複合アクション内なので直せない」と誤って結論づけている ──
+# 上流はとうに直っていて、遅れていたのはこちらだけだった。
+#
+# 失敗の型は「直せなかった」ではなく「気づかなかった」なので、
+# 注意力ではなく仕組みで塞ぐ。
+#
+# npm は対象にしない。three は exact pin(0.185.1)が意図的な仕様で、
+# 自動 PR がそれと戦うことになるため。three の更新は人間が意図して行う。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: 'chore'
+    labels:
+      - ci
