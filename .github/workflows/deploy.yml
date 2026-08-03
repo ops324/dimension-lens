@@ -1,0 +1,50 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  # PR でも push でも走る品質ゲート。vitest は hard gate ──
+  # 通信 API の静的アサート(privacy.test.ts)もここに含まれるので、
+  # 「画像は端末から出ません」の一段目が毎コミット検証される。
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # build を先に走らせる。privacy.test.ts は dist/ の中身を静的検査するので、
+      # 成果物が無い状態では意味のある判定ができない ── そして「dist が無いから skip」は
+      # 「常に緑」という最悪の失敗モードなので、あちらは skip せず落ちるようにしてある。
+      - run: npm run build
+      - run: npm test
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  # デプロイは main への push のときだけ。PR ではゲートまでで止める。
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
