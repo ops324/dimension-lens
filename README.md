@@ -2,6 +2,9 @@
 
 **写真は、五次元にいる。**
 
+<https://ops324.github.io/dimension-lens/>
+（Phase 0 時点では空ページです。見るものが出るのは Phase 1a から）
+
 画像を添付し、次元スライダーを動かすと、その画像が「その次元での姿」になる ——
 ブラウザだけで動く静的な可視化作品。姉妹作 [DIMENSION](https://github.com/ops324/dimension) の派生。
 
