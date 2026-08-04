@@ -21,6 +21,28 @@
  * 本番ビルドには載せない(`import.meta.env.DEV` で握り潰す)。
  */
 
+import type { CapabilityReport } from '../ingest/capabilities';
+import type { IngestMeta } from '../ingest/protocol';
+
+/**
+ * 取り込みの結果のうち、**ブラウザから測りたい分だけ**。
+ * 正準バッファも点群バッファもここには出さない(worker に常駐しているし、
+ * 32MB をコンソールへ引き出すのは測定ではない)。
+ */
+export interface LensIngestReport {
+  /** worker 経路か、メインスレッド・フォールバックか */
+  mode: 'worker' | 'main';
+  meta: IngestMeta;
+  gridW: number;
+  gridH: number;
+  pointCount: number;
+  meanHex: string;
+  maxNorm: number;
+  /** §4.9。`2 · maxNorm` を超えていること */
+  safeDist: number;
+  degenerate: { lightness: boolean; chroma: boolean };
+}
+
 export interface LensDevHook {
   /** rAF が絞られていても合成フレームを steps 回進めて描画する */
   renderOnce(steps?: number): void;
@@ -42,6 +64,16 @@ export interface LensDevHook {
   readback(x: number, y: number, w: number, h: number): Promise<Uint8Array>;
   /** 現在の測定値一式(平均色・グリッド寸法・実効 gain・点数・ティア) */
   stats(): LensStats;
+
+  /**
+   * 機能検出の**実測結果**(Phase 1a-ii)。
+   * `imageOrientation` や `resizeWidth` が「実装されているか」と「効いたか」を分けて持つ。
+   */
+  capabilities(): Promise<CapabilityReport>;
+  /** 起動時に標本 No.0 を通した結果。まだなら null */
+  ingestReport(): LensIngestReport | null;
+  /** 任意の画像を取り込み経路へ通す(忠実性測定と EXIF の実機確認に使う) */
+  ingestBlob(source: Blob): Promise<LensIngestReport>;
 }
 
 export interface LensStats {
@@ -90,5 +122,8 @@ export function installDevHook(hook: Partial<LensDevHook>): void {
     setCompress: hook.setCompress ?? notReady('setCompress'),
     readback: hook.readback ?? notReady('readback'),
     stats: hook.stats ?? notReady('stats'),
+    capabilities: hook.capabilities ?? notReady('capabilities'),
+    ingestReport: hook.ingestReport ?? notReady('ingestReport'),
+    ingestBlob: hook.ingestBlob ?? notReady('ingestBlob'),
   };
 }

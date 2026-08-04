@@ -17,9 +17,18 @@ import { defineConfig, type Plugin } from 'vite';
  * `base-uri 'none'` は非自明に load-bearing ── 注入された <base href> は全相対 URL を
  * 付け替えるので、これが開いていると `script-src 'self'` が無効化される。
  *
- * `worker-src 'self' blob:` は取り込み worker のため。vite の worker 出力形式によって
- * blob: が要るか same-origin チャンクで足りるかが変わるので、両方許している
- * (`worker.format: 'es'` を指定しているので通常は same-origin チャンク)。
+ * `worker-src 'self'` は取り込み worker のため。**Phase 0 では `blob:` も許していた** ──
+ * 「vite の worker 出力形式によっては blob: が要るかもしれない」という理由で、
+ * つまり**実際に何が出るか確かめないまま**開けていた。Phase 1a-ii で worker を
+ * 実装して確かめた結果:
+ *
+ *   - `new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })` は
+ *     `dist/assets/worker-*.js` という same-origin チャンクになり、blob: を使わない
+ *   - CSP を載せたサブパス配信で worker の起動と往復が成功し、violation は 0 件
+ *   - `blob:` を必要とするのは `?worker&inline` を選んだときだけで、そちらは採っていない
+ *
+ * → **`blob:` を落とす。** 使っていない許可は、開けた理由を誰も覚えていない許可になる。
+ * (`img-src` の `blob:` は object URL のために残す ── こちらは Phase 1c で実際に使う。)
  *
  * `style-src` の 'unsafe-inline' が唯一の妥協点 ── <noscript> 内の <style> と
  * インライン style 属性のため。ハッシュにすると編集のたびに壊れるので採らない。
@@ -40,7 +49,7 @@ const CSP = [
   "img-src 'self' data: blob:",
   "font-src 'self'",
   "connect-src 'none'",
-  "worker-src 'self' blob:",
+  "worker-src 'self'",
   "object-src 'none'",
   "media-src 'none'",
   "manifest-src 'none'",
