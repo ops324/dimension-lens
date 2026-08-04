@@ -87,6 +87,7 @@ Phase 0 の表に残っていた（GPU 経路の行）。中間を許すと、�
 | **`safeDist` が実際に配線されている** | **A**（Phase 1a-i では C） | `session.ts` が `lift` と同じ場所で返す。起動実測 maxNorm 1.5339 → safeDist 3.3746 > 2·maxNorm。§4.9 |
 | **worker を入れてもバンドルに通信 API が無い** | **A** | `privacy.test.ts`。dist 全走査で 8 種 0 件、`createObjectURL` も 0 件 |
 | **CSP 下で same-origin worker が起動する / `blob:` worker は塞がれる** | **A** | preview 実測。violation の `effectiveDirective = worker-src`（§6.3） |
+| **公開ページ上で取り込みが完走する** | **A** | GitHub Pages 実測。`data-lens-ingest="ok"`、worker チャンクがサブパスで解決、外向き 0、コンソールエラー 0（§7.3） |
 | `worker-src` に `blob:` が要る | **偽**（Phase 0 の未検証な仮定） | 「vite の出力形式によっては要るかもしれない」で**確かめずに開けていた**。same-origin チャンクで足りる。§6.1 |
 | Display P3 の入力経路 | **C** | 1a-ii は `gamut: 'srgb'` 固定。4 箇所同時に揃わないと黙って色相が誤り、node では守れない。Phase 1c |
 | 軸ごと正規化は (3,4) を色相回転でなくする | **B** | `D⁻¹RD ∉ SO(2)`（s_a≠s_b）は代数的に確定。→ ブロック等方正規化 |
@@ -828,12 +829,19 @@ vite が `<script>` タグごと出力から落とした。そのままなら
 
 **Phase 1a-ii でこの痕跡を 1 つ増やした**: `data-lens-ingest`（`ok` / `failed:<code>`）。
 「JS が読めた」の次に確かめたいのは「**CSP 下で worker が起動して取り込みが完走したか**」で、
-これは本番ビルドでしか測れない（`__LENS__` は DEV にしか載らない）。preview 実測:
+これは本番ビルドでしか測れない（`__LENS__` は DEV にしか載らない）。
+
+**preview だけで済ませない。** 実際の公開ページ <https://ops324.github.io/dimension-lens/> で測った
+（preview はサブパス配信でも同一オリジンでもないので、`base: './'` と worker の相対 URL の
+組み合わせは公開先でしか確かめられない）:
 
 | 確認項目 | 結果 |
 |---|---|
-| `data-lens-ingest` | ✅ `"ok"` —— CSP 下で worker 経路の取り込みが完走 |
-| 外向きリクエスト | **0**（`/`・`/assets/index-*.js`・`/assets/worker-*.js` のみ） |
+| `data-lens="booted"` | ✅ |
+| **`data-lens-ingest`** | ✅ `"ok"` —— **公開ページ上で CSP 下の worker 取り込みが完走** |
+| worker チャンクがサブパスで解決する | ✅ `/dimension-lens/assets/worker-*.js` |
+| CSP の `worker-src` | `'self'`（`blob:` 無しで動いている） |
+| 外向きリクエスト | **0**（同一オリジンの 3 本のみ: ページ・index チャンク・worker チャンク） |
 | コンソールエラー | **0** |
 | `window.__LENS__` | `undefined`（本番には載らない） |
 
