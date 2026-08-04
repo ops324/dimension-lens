@@ -215,6 +215,25 @@ export function liftProject5(
   }
 }
 
+/**
+ * 透視カスケードが安全になる視点距離を返す。
+ *
+ * 段 d の増幅は `f = dist/(dist − p[d])` で、入力ノルム `r` に対し出力は
+ * `r · dist/(dist − r)`。n=5 は 2 段(d=4, d=3)なので、第 2 段の入力が dist を割るには
+ *
+ *     r · dist/(dist − r) < dist   ⟺   **dist > 2r**
+ *
+ * が必要十分。`lift()` が返す `maxNorm` は 1 を超えうる ── `sC` が p95 なので
+ * 上位 5% の画素は a', b' が 1 を超える。**測ってから dist を決める**のが
+ * 「‖x‖ ≤ 1 に正規化してあるから安全」という恒真の思い込みへの対処である(SPEC §4.8)。
+ *
+ * `margin` は余裕。2.2 なら「dist = 2.2·maxNorm」で、必要条件 2.0 に 10% の余裕。
+ */
+export function safeDist(maxNorm: number, base = 2.4, margin = 2.2): number {
+  const need = margin * (maxNorm > 0 ? maxNorm : 0);
+  return need > base ? need : base;
+}
+
 export interface CascadeSafety {
   /** 全点・全段を通じた max(|p[d]| / dist)。1 以上なら分母が符号反転している */
   maxRatio: number;
