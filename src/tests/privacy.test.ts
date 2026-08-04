@@ -96,8 +96,38 @@ describe('プライバシー(ビルド成果物の静的検査)', () => {
     // 注入された <base href> は全相対 URL を付け替えて script-src 'self' を無効化する。
     expect(csp).toContain("base-uri 'none'");
     expect(csp).toContain("form-action 'none'");
-    // 取り込み worker が起動できること
-    expect(csp).toContain("worker-src 'self' blob:");
+    // 取り込み worker が起動できること。**`blob:` は含まない** ──
+    // Phase 0 は「要るかもしれない」で開けていたが、1a-ii で worker を実装して
+    // same-origin チャンク(dist/assets/worker-*.js)で足りることを実測したので閉じた。
+    // ここを緩める PR は、blob: worker が要る具体的な理由を本文に書くこと。
+    expect(csp).toContain("worker-src 'self'");
+    expect(csp).not.toContain('worker-src \'self\' blob:');
+  });
+
+  /**
+   * worker が **same-origin のチャンクとして出ている**こと。
+   *
+   * `?worker&inline` に切り替わると vite は `new Blob([...])` +
+   * `createObjectURL` を吐き、CSP の `worker-src` に `blob:` が要るようになる。
+   * その変化はバンドルを見ないと分からず、CSP を緩める PR として現れるとは限らない。
+   */
+  it('取り込み worker が dist/assets の独立チャンクとして出ている', () => {
+    const files = collectJs(DIST).map((f) => f.slice(DIST.length + 1));
+    const workers = files.filter((f) => /(^|\/)worker-[\w-]+\.js$/.test(f));
+    expect(workers, `dist の JS: ${JSON.stringify(files)}`).toHaveLength(1);
+    expect(workers[0].startsWith('assets/')).toBe(true);
+  });
+
+  it('worker を Blob 経由で起動していない(inline worker に切り替わっていない)', () => {
+    for (const file of collectJs(DIST)) {
+      const src = readFileSync(file, 'utf8');
+      // createObjectURL 自体は Phase 1c で object URL に使うが、
+      // **worker の生成と同じ式に現れる**のは inline worker のときだけ。
+      expect(
+        /new\s+Worker\s*\(\s*(?:URL\.)?createObjectURL/.test(src),
+        `${file.slice(DIST.length + 1)} が Blob worker を作っている`,
+      ).toBe(false);
+    }
   });
 
   it('Referrer ポリシーが no-referrer である(?d= 等が外部へ漏れない)', () => {
