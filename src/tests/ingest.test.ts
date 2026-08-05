@@ -7,6 +7,7 @@
  * **stub して緑にすると「常に緑」になる**ので、無いことのほうを機械で見張る(末尾)。
  */
 
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   exceedsSourceLimit,
@@ -89,6 +90,24 @@ describe('planResize', () => {
     expect(p.width * p.height).toBeGreaterThan(0);
   });
 
+  /**
+   * **丸めが実際に効く入力**（Phase 1c で足した歯）。
+   *
+   * 1b までのテストは `Math.round` を `Math.floor` に変えても**緑のまま**だった ──
+   * 全入力で小数部が 0.5 を超えなかったからである（6000×4000 と 7728×5152 は
+   * 1365.33、4032×3024 は 1536.0 ちょうど、8000×1000 は 256.0、2049×2048 は 2047.0）。
+   * 唯一関係する主張「アスペクト比 0.1% 以内」も、1365 では ±1px = 0.073% なので
+   * どのみち吸収してしまう。§7.7 の `fillRatios` と同じ「採点者が緩すぎる」型。
+   *
+   * 3001×2000 は `2000 · 2048/3001 = 1364.87` なので round=1365 / floor=1364 に割れる。
+   */
+  it('短辺は四捨五入する(切り捨てではない)', () => {
+    expect(planResize(3001, 2000, 2048)).toEqual({ width: 2048, height: 1365, resized: true });
+    expect(planResize(2000, 3001, 2048)).toEqual({ width: 1365, height: 2048, resized: true });
+    // 逆向きにも割れる入力: 3999×2000 → 1024.26（round=1024 / ceil=1025）
+    expect(planResize(3999, 2000, 2048).height).toBe(1024);
+  });
+
   it('どんな入力でも正準の画素数上限を超えない', () => {
     for (const [w, h] of [
       [40000, 40000], [7728, 5152], [10000, 3], [3, 10000], [2048, 2048],
@@ -109,6 +128,29 @@ describe('planResize', () => {
     expect(exceedsSourceLimit(7728, 5152)).toBe(false); // 39.8MP は通る
     expect(exceedsSourceLimit(20000, 20000)).toBe(true);
     expect(MAX_SOURCE_PIXELS).toBeGreaterThan(40_000_000);
+  });
+
+  /**
+   * **上限そのものをピン留めする**（Phase 1c で足した歯）。
+   *
+   * 1b までは `MAX_CANONICAL_PIXELS` の参照が 2 件しか無かった ── 定義と、
+   * **それを読むこのテスト**である。製品コードは一度も使っておらず、
+   * 定数がテスト自身の採点基準になっていたので、**4096² に 4 倍しても緑**だった。
+   * §7.1 が名指しした `reconstructMean`（分子と分母が同時に動く）と同じ型。
+   * → 期待値をテスト側にリテラルで書き、片側だけを動かせるようにする。
+   *
+   * `MAX_SOURCE_PIXELS` も同じ理由で両側を留める。1b のテストは
+   * 「40,000,000 より大きい」しか見ておらず、41,000,000 でも 200,000,000 でも緑だった。
+   */
+  it('上限が値としてピン留めされている(片側だけ動かしても落ちる)', () => {
+    expect(MAX_CANONICAL_PIXELS).toBe(2048 * 2048);
+    // 正準は f32×3。48.00 MiB という §4.14 の表の数字が、ここから出ている
+    expect((MAX_CANONICAL_PIXELS * 3 * 4) / 1048576).toBeCloseTo(48.0, 6);
+
+    expect(MAX_SOURCE_PIXELS).toBe(80_000_000);
+    // 40MP(7728×5152 = 39.81MP)を通し、90MP(10000×9000)を止める、の両側
+    expect(MAX_SOURCE_PIXELS).toBeGreaterThan(7728 * 5152);
+    expect(MAX_SOURCE_PIXELS).toBeLessThan(10000 * 9000);
   });
 });
 
@@ -172,6 +214,28 @@ describe('EXIF 向き probe', () => {
     expect(sof).toEqual({ width: 2, height: 1 });
   });
 
+  /**
+   * **バイト列の全体をチェックサムで留める**（Phase 1c で足した歯）。
+   *
+   * `parseProbe` は SOS(`0xDA`) で `break` するので **EOI(`FFD9`) を一度も読まない**。
+   * そのため `orientProbeBytes()` が**末尾 1 バイトを落とす**変異を入れても、
+   * `out` は `bin.length` で確保済みなので `length === 317` は保たれ、
+   * **276 件が緑のまま**だった（Phase 1c で実測）。
+   * §4.12 が「定数が壊れると probe は黙って `'unknown'` を返す ──
+   * つまり向きの検証を諦めたことに誰も気づかない」と書いた事故そのものが、
+   * その事故を防ぐはずのテストで検出できていなかった。
+   *
+   * `vendor.test.ts` が移植ファイルにやっているのと同じ方式にする。
+   */
+  it('probe のバイト列が sha256 で固定されている', () => {
+    const bytes = orientProbeBytes();
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(
+      '18106d193a7009e46e9941b6564838fc899e80e307d9ba350f05f4b743dbf9e6',
+    );
+    // JPEG として閉じていること（parseProbe が読まない側の端）
+    expect([bytes[bytes.length - 2], bytes[bytes.length - 1]]).toEqual([0xff, 0xd9]);
+  });
+
   it('画素の寸法と、向きを適用したときの寸法が転置の関係にある', () => {
     // ここが等しくなると probe は何も判定できない(正方形の probe を作る事故)
     expect(PROBE_ORIENTED.width).toBe(PROBE_UNORIENTED.height);
@@ -215,7 +279,7 @@ describe('機能検出の判定(純関数)', () => {
     expect(r.canUseWorker).toBe(true);
     expect(r.canResizeInDecoder).toBe(true);
     expect(r.orientationRisk).toBe('none');
-    expect(r.notes).toHaveLength(0);
+    expect(r.noteIds).toHaveLength(0);
   });
 
   /**
@@ -227,7 +291,7 @@ describe('機能検出の判定(純関数)', () => {
     expect(r.optionMembers.resizeQuality).toBe(true);
     expect(r.canResizeInDecoder).toBe(false);
     expect(r.canIngest).toBe(true);
-    expect(r.notes.join()).toContain('無視されました');
+    expect(r.noteIds).toContain('resize-ignored');
   });
 
   it('未実施(null)は「効く」に倒さない', () => {
@@ -239,19 +303,19 @@ describe('機能検出の判定(純関数)', () => {
     const r = summarizeCapabilities({ ...RAW_OK, hasOffscreenCanvas: false });
     expect(r.canUseWorker).toBe(false);
     expect(r.canIngest).toBe(true); // 取り込み自体はできる
-    expect(r.notes.join()).toContain('メインスレッド');
+    expect(r.noteIds).toContain('no-offscreen-canvas');
   });
 
   it('createImageBitmap が無ければ取り込めないと表明する', () => {
     const r = summarizeCapabilities({ ...RAW_OK, hasCreateImageBitmap: false });
     expect(r.canIngest).toBe(false);
-    expect(r.notes.join()).toContain('createImageBitmap');
+    expect(r.noteIds).toContain('no-create-image-bitmap');
   });
 
   it('向きが適用されない環境は risk を立てて理由を出す', () => {
     const r = summarizeCapabilities({ ...RAW_OK, orientation: 'not-applied' });
     expect(r.orientationRisk).toBe('must-orient-manually');
-    expect(r.notes.join()).toContain('横倒し');
+    expect(r.noteIds).toContain('exif-not-applied');
   });
 
   it('probe が失敗したときは「適用済み」に倒さない', () => {
@@ -269,7 +333,7 @@ describe('機能検出の判定(純関数)', () => {
     expect(summarizeCapabilities(RAW_OK).gamut).toBe('srgb');
     const p3 = summarizeCapabilities({ ...RAW_OK, imageDataColorSpace: 'display-p3' });
     expect(p3.gamut).toBe('srgb');
-    expect(p3.notes.join()).toContain('display-p3');
+    expect(p3.noteIds).toContain('image-data-color-space-unexpected');
   });
 });
 

@@ -81,16 +81,18 @@ class WorkerIngestClient implements IngestClient {
       const slot = this.pending.get(res.id);
       if (!slot) return;
       this.pending.delete(res.id);
-      if (res.kind === 'failed') slot.reject(new IngestError(res.code, res.message));
+      if (res.kind === 'failed') slot.reject(new IngestError(res.code, res.detail));
       else slot.resolve(res);
     };
-    // worker 自体が落ちたときに、待っている Promise が永遠に解決しない状態を作らない
-    this.worker.onerror = (e: ErrorEvent) => this.failAll(e.message || 'worker が停止しました。');
-    this.worker.onmessageerror = () => this.failAll('worker のメッセージを複製できませんでした。');
+    // worker 自体が落ちたときに、待っている Promise が永遠に解決しない状態を作らない。
+    // **文言は載せない** ── `ErrorEvent.message` はブラウザが作る英文で、
+    // 利用者に見せるものではないし、`copy.ts` の外にある文字列でもある。
+    this.worker.onerror = () => this.failAll();
+    this.worker.onmessageerror = () => this.failAll();
   }
 
-  private failAll(message: string): void {
-    const err = new IngestError('internal', message);
+  private failAll(): void {
+    const err = new IngestError('internal');
     for (const [, slot] of this.pending) slot.reject(err);
     this.pending.clear();
   }
@@ -131,7 +133,7 @@ class WorkerIngestClient implements IngestClient {
   }
 
   dispose(): void {
-    this.failAll('取り込みを終了しました。');
+    this.failAll();
     this.worker.terminate();
   }
 }

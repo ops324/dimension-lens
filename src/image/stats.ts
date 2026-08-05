@@ -221,6 +221,34 @@ export function computeStats(src: Canonical): ImageStats {
  * 規則は「**スパンで割らない。スケールを置く**」── 測った微小値を*使う*のではなく
  * *置き換える*ので、`0/0` が構造的に発生しない。
  */
+/**
+ * 5 軸 `[u, v, L, a, b]` のそれぞれが**この画像に存在するか**（SPEC §2.2）。
+ *
+ * 空間軸 (u, v) は常に存在する ── 画像が 1×1 でも「縦と横」は概念として在る。
+ * 明度ブロックが退化すれば軸 2 が、彩度ブロックが退化すれば軸 3・4 が同時に落ちる
+ * （彩度は **1 スカラー**で正規化されるので、a と b が別々に退化することはない。§2.1）。
+ *
+ * **`lensScene` が `extent` を 0 に固定するのに使う。** 純関数なので node で採点できる ──
+ * 退化の表明が「シーンに届いているか」を、ブラウザを起動せずに落とせる。
+ */
+export function axisPresence(scales: BlockScales): boolean[] {
+  const { lightness, chroma } = scales.degenerate;
+  return [true, true, !lightness, !chroma, !chroma];
+}
+
+/**
+ * 退化の種類。`copy.ts` の `DEGENERATE_COPY` の鍵になる。`null` は「退化していない」。
+ * **`'both'` を `'chroma'` に丸めない** ── 単色画像に「色の軸がありません」とだけ言うと、
+ * 明度の軸は動くという含意になり、偽になる。
+ */
+export function degeneracyKind(scales: BlockScales): 'chroma' | 'lightness' | 'both' | null {
+  const { lightness, chroma } = scales.degenerate;
+  if (lightness && chroma) return 'both';
+  if (chroma) return 'chroma';
+  if (lightness) return 'lightness';
+  return null;
+}
+
 export function computeScales(stats: ImageStats): BlockScales {
   const lightness = stats.lightness.degenerate;
   const chroma = stats.chroma.degenerate;

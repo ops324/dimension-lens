@@ -51,7 +51,7 @@ import type { PlaneRotation } from '../math/rotation';
 import { imageHalfExtents, type GridSpec } from '../image/grid';
 import { buildColumnLine, lineCountFor } from '../image/columnLine';
 import { collapseWeight, additionDepth } from '../image/spriteGain';
-import type { BlockScales } from '../image/stats';
+import { axisPresence, type BlockScales } from '../image/stats';
 import {
   framingHold,
   needDistance,
@@ -135,6 +135,14 @@ export interface LensSceneStats {
   sampleWeight: number;
   /** half-float に積まれる加算回数の見積もり（点数ではない） */
   additionDepth: number;
+  /**
+   * 5 軸 `[u, v, L, a, b]` がこの画像に存在するか（Phase 1c・SPEC §2.2）。
+   * **`extent` を 0 に固定する側の観測点。** これを出さないと
+   * 「退化の表明がシーンへ届いているか」を機械で見る手段が無い。
+   */
+  axisPresent: boolean[];
+  /** そのフレームの `extent`。退化軸は `dimLevel` に依らず 0 */
+  extent: number[];
   cameraDistance: number;
   /** ホールド前の、その位相での厳密な必要距離 */
   needDistance: number;
@@ -171,6 +179,11 @@ export class LensScene {
   private readonly angles: PlaneRotation[] = createAngleBuffer();
   private readonly matrix = new Float64Array(N * N);
   private readonly extent = new Float64Array(N);
+  /**
+   * 軸が存在するか（SPEC §2.2 の「その軸は存在しないと表明する」の、実装側）。
+   * 添字は `[u, v, L, a, b]`。`setSource` が `scales.degenerate` から作る。
+   */
+  private axisPresent: boolean[] = [true, true, true, true, true];
 
   private source: LensSceneSource;
   private cascadeDist: number;
@@ -254,6 +267,8 @@ export class LensScene {
     );
     this.lineBase = lineBase;
     this.line.commitColors();
+    // 退化は画像ごとに決まる。空間軸(u,v)は常に存在する
+    this.axisPresent = axisPresence(source.scales);
     // フレーミングの保持は画像が変われば無効
     this.heldDistance = 0;
   }
@@ -357,7 +372,17 @@ export class LensScene {
       this.angles[k].angle = gate === 0 ? 0 : gate * this.phases[k];
     }
 
-    for (let k = 0; k < N; k++) this.extent[k] = clamp01(d - k);
+    // **退化した軸は存在しない**（SPEC §2.2）。`extent` を 0 に固定する。
+    //
+    // 絵は変わらない ── `computeScales` が退化時にスケールを厳密 1 へ*置く*ので
+    // `a', b'` は 1e-16 のままで、`extent` が 0 でも 1 でも寄与が同じである。
+    // 実測（Phase 1c・完全グレースケール 1024×640）: `d = 3 → 4 → 5` で
+    // 中央 128×128 の **65,536 画素中 0 個**が相違。つまりこれは「黙って壊れる」欠落ではなく
+    // **「黙って何も起きない」欠落**で、NaN より発見が遅い。
+    // だからここでコードに書き、`copy.ts` の `DEGENERATE_COPY` が言葉で表明する。
+    for (let k = 0; k < N; k++) {
+      this.extent[k] = this.axisPresent[k] ? clamp01(d - k) : 0;
+    }
 
     composeRotN(this.angles, N, this.matrix);
     foldExtent(this.matrix, N, this.extent);
@@ -513,6 +538,9 @@ export class LensScene {
       calibrated: cfg.calibrated,
       sampleWeight: this.lastSampleWeight,
       additionDepth: this.lastDepth,
+      // SPEC §2.2 の「その軸は存在しないと表明する」の、観測できる形（Phase 1c）
+      axisPresent: [...this.axisPresent],
+      extent: [...this.extent],
       cameraDistance: this.cameraDistance,
       needDistance: this.lastNeed,
       spread: this.lastSpread,

@@ -40,6 +40,55 @@ body {
   pointer-events: none;
 }
 
+/*
+ * 測定用の viewport 固定（Phase 1c・`__LENS__.setViewport`）。
+ *
+ * 描画バッファは engine が `setSize(w, h, false)` で握るので、**測定にはこの CSS は
+ * 要らない** ── 要るのは「画面で見ている絵と、読み戻している絵が同じ寸法である」
+ * ことを目で確かめられるようにするためだけ。DEV でしか立たない属性である。
+ */
+:root[data-lens-measure='on'] #gl,
+:root[data-lens-measure='on'] #ui {
+  inset: 0 auto auto 0;
+  width: var(--lens-measure-w);
+  height: var(--lens-measure-h);
+}
+
+/*
+ * 空状態（Phase 1c）。**書体も配置も Phase 3。**
+ * ここが約束するのは「`copy.ts` の文字列が実際に画面へ到達すること」までである。
+ */
+.lens-empty {
+  position: absolute;
+  inset: auto 0 0 0;
+  margin: 0 auto;
+  max-width: 44rem;
+  padding: 1.25rem 1.5rem 2rem;
+  pointer-events: auto;
+  text-align: left;
+  line-height: 1.8;
+  font-size: 0.9rem;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+}
+
+.lens-empty__title {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.lens-empty__body,
+.lens-empty__action,
+.lens-empty__detail {
+  margin: 0 0 0.5rem;
+  opacity: 0.85;
+}
+
+.lens-empty__detail {
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
 #boot-noscript {
   position: fixed;
   inset: 0;

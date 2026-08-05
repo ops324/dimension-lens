@@ -21,8 +21,25 @@
  * だから両方を測り、両方を持ち回る。
  */
 
-import type { OrientationSupport } from './protocol';
+import type { Gamut, OrientationSupport } from './protocol';
 import { probeOrientationSupport } from './orientProbe';
+
+/**
+ * 注記の識別子。**文言は `copy.ts` にあり、ここには無い。**
+ *
+ * 1b までは `notes: string[]` に日本語を直接 push しており、`ingest.test.ts` の 5 件が
+ * `notes.join()` の**部分一致**で採点していた ── 純関数テストが「判断」ではなく
+ * 「文言」を検査している状態で、`protocol.ts` が禁じた「文言で分岐する」の裏返しだった。
+ * ID にすると、文言を書き換えてもテストは落ちず、判断を変えたときだけ落ちる。
+ */
+export type CapabilityNoteId =
+  | 'no-create-image-bitmap'
+  | 'no-2d-context'
+  | 'resize-ignored'
+  | 'no-offscreen-canvas'
+  | 'exif-not-applied'
+  | 'exif-unknown'
+  | 'image-data-color-space-unexpected';
 
 /** 素の観測。**判断を混ぜない** ── 判断は `summarizeCapabilities` の仕事 */
 export interface RawCapabilities {
@@ -60,46 +77,56 @@ export interface CapabilityReport extends RawCapabilities {
    * - `'must-orient-manually'`: デコーダが適用しない。**Phase 1c の担当**
    */
   readonly orientationRisk: 'none' | 'unknown' | 'must-orient-manually';
-  /** 入力の色域として採用する値。1a-ii は srgb 固定(下記) */
-  readonly gamut: 'srgb' | 'display-p3';
-  /** 読み出し欄(Phase 3)と PR にそのまま貼れる、人間可読の注記 */
-  readonly notes: readonly string[];
+  /**
+   * 入力の色域として採用する値。**Phase 1c でも `'srgb'` 固定**（下記）。
+   * この 1 つの値が `decode.ts` の canvas・`getImageData`・`linearizeRgba` の
+   * **3 箇所すべて**へ流れる ── 1b までは各所にリテラルが独立に置かれていた。
+   */
+  readonly gamut: Gamut;
+  /** 注記の**識別子**。文言は `copy.ts` の `CAPABILITY_NOTE_COPY` にある */
+  readonly noteIds: readonly CapabilityNoteId[];
 }
 
 /**
- * 観測 → 判断。**純関数**なので node でテストできる。
+ * **入力の色域の単一情報源。** `decode.ts` の canvas・`getImageData`・`linearizeRgba` は
+ * すべてこの 1 つの値から流れる（1b までは各所に `'srgb'` のリテラルが独立に置かれていた）。
  *
- * ## `gamut` を 1a-ii では `'srgb'` に固定する理由
+ * ## Phase 1c でも `'srgb'` に固定する理由（**1a-ii の「Phase 1c で通す」を撤回した**）
  *
- * Display P3 を実際に通すには **4 つが同時に揃う**必要がある:
- * (1) `colorSpaceConversion` を既定のままにする、(2) キャンバスを
- * `{ colorSpace: 'display-p3' }` で作る、(3) `getImageData({ colorSpace: 'display-p3' })`、
- * (4) `Canonical.gamut` を合わせる。1 つでも外すと**黙って色相が誤る**
- * (`oklab.ts` の `primariesFor` が原色行列を切り替えるため。SPEC §1 の優先度 1 違反)。
- * しかも node には `getImageData` が無いので、この 4 点の整合を vitest では守れない。
+ * 1a-ii の本節は「4 つが同時に揃えば通る／1 つでも外すと黙って誤る。実配線は Phase 1c」と
+ * 書いていた。**前半が偽である**（Phase 1c で実測）。Display P3 の ICC を付けた 8×8 PNG を
+ * 6 通りの構成で読み戻すと、**「4 箇所を揃えた」構成が実装ごとに違う値を返す**:
  *
- * → **1a-ii は `'srgb'` 固定**とし、観測した `imageDataColorSpace` が srgb でなければ
- * 注記に出して**気づける形で**残す。P3 の実配線は Phase 1c。
+ * | 構成 | Chromium 148 | Safari 18.6 |
+ * |---|---|---|
+ * | 既定 csc / sRGB canvas / `getImageData()` ← **現行** | `[255,0,0]` | `[255,0,0]` |
+ * | `csc:'none'` / P3 canvas / `{display-p3}` ← **「4 箇所揃えた」** | **`[215,69,50]`** | **`[234,51,35]`** |
+ * | `csc:'default'` / P3 canvas / `{display-p3}` | `[234,51,35]` | `[234,51,35]` |
+ *
+ * `colorSpaceConversion: 'none'` の**意味論が実装間で割れている**（Chromium では
+ * 3 行目と 2 行目が違い、Safari では同じ）。§4.13 の「実装されているか / 効いたか」の
+ * 2 問では足りず、3 問目「**同じ意味で効いたか**」があり、それは寸法のような
+ * 一次元の観測では捕まらない。
+ *
+ * → **現行の構成だけが 2 実装で一致する。** `'srgb'` 固定は消極的な保留ではなく、
+ * いま唯一クロスブラウザで安定な選択である。P3 を通すのは、
+ * 「通さないことの代償」（広色域の被写体で彩度がどれだけ落ちるか）を ΔE00 で測ってから。
  */
+export const GAMUT: Gamut = 'srgb';
+
+/** 観測 → 判断。**純関数**なので node でテストできる（文言は持たない ── `copy.ts`） */
 export function summarizeCapabilities(raw: RawCapabilities): CapabilityReport {
-  const notes: string[] = [];
+  const noteIds: CapabilityNoteId[] = [];
 
   const canIngest = raw.hasCreateImageBitmap && raw.has2dContext;
-  if (!raw.hasCreateImageBitmap) notes.push('createImageBitmap がありません。取り込みできません。');
-  if (!raw.has2dContext) notes.push('2D コンテキストが取れません。取り込みできません。');
+  if (!raw.hasCreateImageBitmap) noteIds.push('no-create-image-bitmap');
+  if (!raw.has2dContext) noteIds.push('no-2d-context');
 
   const canResizeInDecoder = raw.resizeEffective === true;
-  if (raw.resizeEffective === false) {
-    notes.push(
-      'デコーダの resizeWidth/Height が無視されました(例外は出ていません)。'
-        + ' 縮小は canvas 側で行います。',
-    );
-  }
+  if (raw.resizeEffective === false) noteIds.push('resize-ignored');
 
   const canUseWorker = raw.hasWorker && raw.hasOffscreenCanvas;
-  if (raw.hasWorker && !raw.hasOffscreenCanvas) {
-    notes.push('OffscreenCanvas がないため、取り込みはメインスレッドで行います。');
-  }
+  if (raw.hasWorker && !raw.hasOffscreenCanvas) noteIds.push('no-offscreen-canvas');
 
   let orientationRisk: CapabilityReport['orientationRisk'];
   switch (raw.orientation) {
@@ -108,21 +135,15 @@ export function summarizeCapabilities(raw: RawCapabilities): CapabilityReport {
       break;
     case 'not-applied':
       orientationRisk = 'must-orient-manually';
-      notes.push(
-        'このブラウザは EXIF の向きを適用しません。'
-          + ' 縦向きで撮った写真が横倒しで出ることがあります(Phase 1c で対応)。',
-      );
+      noteIds.push('exif-not-applied');
       break;
     default:
       orientationRisk = 'unknown';
-      notes.push('EXIF の向きの扱いを検証できませんでした。');
+      noteIds.push('exif-unknown');
   }
 
   if (raw.imageDataColorSpace && raw.imageDataColorSpace !== 'srgb') {
-    notes.push(
-      `getImageData が ${raw.imageDataColorSpace} を返しています。`
-        + ' Phase 1a-ii は sRGB 固定で扱います(Display P3 の配線は Phase 1c)。',
-    );
+    noteIds.push('image-data-color-space-unexpected');
   }
 
   return {
@@ -131,8 +152,8 @@ export function summarizeCapabilities(raw: RawCapabilities): CapabilityReport {
     canResizeInDecoder,
     canUseWorker,
     orientationRisk,
-    gamut: 'srgb',
-    notes,
+    gamut: GAMUT,
+    noteIds,
   };
 }
 

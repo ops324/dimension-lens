@@ -17,8 +17,10 @@ import './style.css';
 import { installDevHook, type LensIngestReport, type LensStats } from './dev/hook';
 import { createIngestClient } from './ingest/ingest';
 import { specimenBlob } from './ingest/specimenSource';
-import { IngestError } from './ingest/protocol';
+import { IngestError, type FailureDetail, type IngestFailureCode } from './ingest/protocol';
 import type { IngestPayload } from './ingest/session';
+import { degeneracyKind } from './image/stats';
+import { clearEmptyState, showDegenerate, showFailure } from './ui/emptyState';
 import { Engine } from './core/engine';
 import { bootTier, tierFor } from './core/quality';
 import { LensScene, type LensSceneSource } from './scene/lensScene';
@@ -78,15 +80,41 @@ function relayout(): void {
   });
 }
 
+/**
+ * 直近の失敗。**`ingestReport()` では観測できない**（あれは前の画像の報告をそのまま返す）。
+ *
+ * Phase 1b までは失敗を機械が観測する口が 1 本も無かった ── `data-lens-ingest` は
+ * 起動時に `"ok"` が立ったきり更新されず、その後 `ingestBlob` が何度失敗しても
+ * `"ok"` のままだった。**空状態のテストを書いても「壊れていても緑」になる**という、
+ * §7.2 が名指ししている失敗モードそのもの。
+ */
+let lastFailure: { code: IngestFailureCode; detail?: FailureDetail } | null = null;
+
 async function ingestBlob(source: Blob): Promise<LensIngestReport> {
-  const next = await client.ingest(source, { budget: tier.budget });
-  payload = next;
-  report = toReport(next, client.mode);
-  if (scene) {
-    scene.setSource(sourceFrom(next));
-    relayout();
+  try {
+    const next = await client.ingest(source, { budget: tier.budget });
+    payload = next;
+    report = toReport(next, client.mode);
+    lastFailure = null;
+    document.documentElement.dataset.lensIngest = 'ok';
+    if (scene) {
+      scene.setSource(sourceFrom(next));
+      relayout();
+    }
+    // 取り込めた。前の空状態を消し、退化していれば**そのことを表明する**（SPEC §2.2）
+    clearEmptyState();
+    showDegenerate(degeneracyKind(next.scales));
+    return report;
+  } catch (e) {
+    const code = e instanceof IngestError ? e.code : 'internal';
+    const detail = e instanceof IngestError ? e.detail : undefined;
+    lastFailure = { code, detail };
+    // **`??=` にしない。** 1b はここが `??=` だったので、起動が成功したあとの失敗は
+    // 1 つも痕跡を残さなかった。失敗はいつでも最新の観測で上書きする。
+    document.documentElement.dataset.lensIngest = `failed:${code}`;
+    showFailure(code, detail);
+    throw e;
   }
-  return report;
 }
 
 function stats(): LensStats {
@@ -109,9 +137,8 @@ function stats(): LensStats {
 }
 
 async function boot(): Promise<void> {
-  // ---- 1. 取り込み ----
+  // ---- 1. 取り込み ----（`data-lens-ingest` は `ingestBlob` が両方向へ立てる）
   const r = await ingestBlob(await specimenBlob());
-  document.documentElement.dataset.lensIngest = 'ok';
 
   // ---- 2. engine ----
   const canvas = document.getElementById('gl');
@@ -158,6 +185,26 @@ installDevHook({
   capabilities: () => client.capabilities(),
   ingestReport: () => report,
   ingestBlob,
+  lastFailure: () => lastFailure,
+  /**
+   * 測定用の viewport を確定させる。**`resize` を撃って待つのではなく、
+   * engine のリサイズ経路を同期に通してから、実際の `drawingBuffer` を読んで返す。**
+   *
+   * ペインの `resize_window` はページの `resize` を発火しないので、
+   * 呼び出し側が `dispatchEvent` する回避策では「撃った → 効いた」の確認が要る。
+   * ここで実測値を返すことで、その確認を測定器の内側に閉じる。
+   */
+  setViewport: (cssWidth: number, cssHeight: number) => {
+    if (!engine) throw new Error('engine has not booted yet.');
+    const el = document.documentElement;
+    el.style.setProperty('--lens-measure-w', `${cssWidth}px`);
+    el.style.setProperty('--lens-measure-h', `${cssHeight}px`);
+    el.dataset.lensMeasure = 'on';
+    engine.resize(cssWidth, cssHeight);
+    relayout();
+    engine.renderOnce(1);
+    return engine.drawingBufferSize();
+  },
   renderOnce: (steps = 1) => engine?.renderOnce(steps),
   setDimLevel: (d: number) => {
     scene?.setDimLevel(d);
@@ -199,8 +246,12 @@ installDevHook({
 });
 
 void boot().catch((e: unknown) => {
-  document.documentElement.dataset.lensIngest ??=
-    e instanceof IngestError ? `failed:${e.code}` : 'failed:internal';
+  // 取り込みの失敗は `ingestBlob` が既に痕跡を立てている。ここで拾うのは
+  // engine / シーン側の失敗なので、上書きせずに残す（`??=` はこちらでは正しい）。
+  if (!(e instanceof IngestError)) {
+    document.documentElement.dataset.lensIngest ??= 'ok';
+    showFailure('internal');
+  }
   document.documentElement.dataset.lensRender = 'failed';
-  console.error('[LENS] 起動に失敗しました。', e);
+  console.error('[LENS] boot failed.', e);
 });
