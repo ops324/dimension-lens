@@ -85,8 +85,10 @@ const EXPECTED: readonly VendoredFile[] = [
     path: 'src/render/colorPointBatch.ts',
     from: 'src/render/pointBatch.ts',
     // 点ごとの色 / InstancedBufferGeometry / F=21 / 正規化ゲイン
+    // Phase 1b: uSampleWeight（潰しの補正）を第 3 の uniform として追加、
+    //           configure が s0y と較正域の判定を返す
     status: 'MODIFIED',
-    sha256: 'b34c1527c27f27ba',
+    sha256: '7b811c59cb0a9fac',
   },
 ];
 

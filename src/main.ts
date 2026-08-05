@@ -55,8 +55,12 @@ function sourceFrom(p: IngestPayload): LensSceneSource {
     grid: p.grid,
     base: p.base,
     colors: p.colors,
+    // 列平均バッファ（Phase 1b）は**正準バッファ**の列平均から作る（SPEC §4.7）
+    columnMeans: p.stats.columnMeans,
+    scales: p.scales,
     width: p.meta.width,
     height: p.meta.height,
+    gamut: p.meta.gamut,
     maxNorm: p.maxNorm,
     plate: p.plate,
   };
@@ -93,10 +97,10 @@ function stats(): LensStats {
     gridW: s?.gridW ?? 0,
     gridH: s?.gridH ?? 0,
     pointCount: s?.pointCount ?? 0,
-    // 列平均バッファは Phase 1b。ここで 'columnMeans' を返す経路はまだ無い
-    buffer: 'grid',
-    // sampleWeight も Phase 1b。実装が無いのに数値を返さない
-    sampleWeight: 1,
+    // Phase 1b で実装が入った。**リテラルを返さない** ── シーンが実際に
+    // 使っているバッファと補正をそのまま出す（測定器が自分の未実装を隠さない）
+    buffer: s?.buffer ?? 'grid',
+    sampleWeight: s?.sampleWeight ?? 1,
     tier: tier.name,
     dpr: engine ? engine.renderer.getPixelRatio() : 0,
     gamut: payload?.meta.gamut ?? 'srgb',
@@ -143,7 +147,8 @@ async function boot(): Promise<void> {
         + ` = ${s.pointCount} 点 / ティア ${tier.name} / DPR ${engine.renderer.getPixelRatio()}`
         + ` / s0 ${s.s0.toFixed(2)}px / スプライト ${s.spritePx.toFixed(1)}px / gain ${s.gain.toFixed(4)}`
         + ` / カメラ距離 ${s.cameraDistance.toFixed(3)} / カスケード dist ${s.cascadeDist.toFixed(3)}`
-        + ` / アンカー ${s.anchored}`,
+        + ` / アンカー ${s.anchored} / バッファ ${s.buffer} / 線 ${s.lineCount} 点`
+        + ` / sampleWeight ${s.sampleWeight} / 加算深度 ${s.additionDepth}`,
     );
     console.info('[LENS] window.__LENS__ で測定できる。');
   }
@@ -159,6 +164,10 @@ installDevHook({
     engine?.renderOnce(1);
   },
   freezeRotation: (frozen: boolean) => scene?.freezeRotation(frozen),
+  resetRotation: () => {
+    scene?.resetRotation();
+    engine?.renderOnce(1);
+  },
   setBloom: (on: boolean) => engine?.postfx.setBloomEnabled(on),
   setGrade: (on: boolean) => engine?.postfx.setGradeEnabled(on),
   setCompress: (on: boolean) => engine?.postfx.setCompressEnabled(on),

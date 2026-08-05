@@ -129,7 +129,54 @@ describe('ColorPointBatch', () => {
     expect(b.material.fragmentShader).toContain('if (r2 > 0.25) discard;');
     expect(b.material.fragmentShader).toContain('exp(-uF * r2)');
     // 色は**リニア光**のまま出す（sRGB エンコードは鎖の最後で 1 回だけ）
-    expect(b.material.fragmentShader).toContain('uGain * uWeight * w');
+    expect(b.material.fragmentShader).toContain('uGain * uSampleWeight * uWeight * w');
+    b.dispose();
+  });
+
+  /**
+   * ## `uSampleWeight` は第 3 の uniform でなければならない（Phase 1b）
+   *
+   * `uGain` へ掛け込むと `configure()`（リサイズのたびに走る）が上書きするので、
+   * 「リサイズしたら明るさが戻る」という時々しか出ない壊れ方をする。
+   * `uWeight` へ掛け込むと `setWeight(0)` の「描画そのものを外す」判定に
+   * 巻き込まれ、`dimLevel = 0` で点群が消える。
+   */
+  it('sampleWeight は uGain とも uWeight とも独立（configure に上書きされない）', () => {
+    const b = new ColorPointBatch(4);
+    b.configure({ cellWorld: 0.01, pxPerWorld: 500, distance: 2, maxPointSize: 511 });
+    b.setSampleWeight(1.4831);
+    b.setWeight(1);
+    expect(b.material.uniforms.uSampleWeight.value).toBeCloseTo(1.4831, 12);
+
+    // リサイズ相当。gain は変わるが sampleWeight は動かない
+    b.configure({ cellWorld: 0.02, pxPerWorld: 900, distance: 2, maxPointSize: 511 });
+    expect(b.material.uniforms.uSampleWeight.value).toBeCloseTo(1.4831, 12);
+
+    // 0 でも点群は消えない（消すのは uWeight の役目）
+    b.setSampleWeight(0);
+    expect(b.object.visible).toBe(true);
+    // 非有限・非正は 1 に倒す（Infinity が入ると全画面 Inf になる）
+    b.setSampleWeight(Number.POSITIVE_INFINITY);
+    expect(b.material.uniforms.uSampleWeight.value).toBe(1);
+    b.dispose();
+  });
+
+  it('configure が s0y と較正域の判定を返す', () => {
+    const b = new ColorPointBatch(4);
+    const r = b.configure({
+      cellWorld: 0.01,
+      cellWorldY: 0.02,
+      pxPerWorld: 500,
+      distance: 2,
+      maxPointSize: 511,
+    });
+    expect(r.s0).toBeCloseTo(2.5, 12);
+    expect(r.s0y).toBeCloseTo(5, 12);
+    expect(r.calibrated).toBe(true);
+    // 極端に細かい格子は較正域の外。**黙って値を返さず、外れたことを申告する**
+    const tiny = b.configure({ cellWorld: 1e-4, pxPerWorld: 500, distance: 2, maxPointSize: 511 });
+    expect(tiny.calibrated).toBe(false);
+    expect(Number.isFinite(tiny.gain)).toBe(true);
     b.dispose();
   });
 });
