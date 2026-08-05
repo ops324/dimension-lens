@@ -230,3 +230,149 @@ export class Capture {
     this.pass.dispose();
   }
 }
+
+/** half-float(IEEE 754 binary16) → f32。`Float16Array` の有無に依存させない */
+export function halfToFloat(h: number): number {
+  const s = (h & 0x8000) !== 0 ? -1 : 1;
+  const e = (h >> 10) & 0x1f;
+  const m = h & 0x3ff;
+  if (e === 0) return s * m * 2 ** -24; // 非正規数（ここが 0 になる実装を疑うために要る）
+  if (e === 31) return m === 0 ? s * Infinity : NaN;
+  return s * (m + 1024) * 2 ** (e - 25);
+}
+
+/**
+ * **リニア HDR のまま読む口**（Phase 2）。`Capture` とは測る対象が違う。
+ *
+ * `Capture` は鎖の最後の 8bit RT を読むので、報告できるのは「画面に出るのと同じ値」──
+ * つまり **1.0 を超えた値と 1.0 ちょうどを区別できない**。`CompressPass` が管理する量は
+ * まさにそれなので、あの口だけで圧縮を測ると「クリップが消えた」しか言えず、
+ * **正しい強度と 10 倍間違えた強度が同じ見出しを出す**。
+ *
+ * → `OutputPass` の**前**（＝ sRGB エンコード前・リニア空間）に写しを取る。
+ * `HalfFloatType` なので §4.17 のとおり **`Uint16Array`** で読む
+ * （`Uint8Array` は例外を投げずに `INVALID_OPERATION` と全 0 を返す）。
+ */
+/**
+ * HDR 自己検査で往復させる値。**1 つは必ず 1.0 を超えていなければならない** ──
+ * この口の存在理由が「1.0 超と 1.0 ちょうどを区別すること」だからで、
+ * 1.0 以下だけで通した自己検査は 8bit の `Capture` と同じことしか確かめていない。
+ * 3 つとも fp16 で厳密に表せるので、往復は恒等でなければならない。
+ * `capture.test.ts` が「最大値 > 1」を node で見張る（`npm run teeth` の台帳にも在る）。
+ */
+export const HDR_SELFTEST_VALUE: readonly [number, number, number] = [2.5, 0.25, 0.0625];
+
+export class HdrCapture {
+  readonly pass: CapturePass;
+  private target: THREE.WebGLRenderTarget;
+  private width: number;
+  private height: number;
+
+  constructor(width: number, height: number) {
+    this.width = Math.max(1, Math.round(width));
+    this.height = Math.max(1, Math.round(height));
+    this.target = HdrCapture.makeTarget(this.width, this.height);
+    this.pass = new CapturePass();
+    this.pass.target = this.target;
+  }
+
+  private static makeTarget(w: number, h: number): THREE.WebGLRenderTarget {
+    const rt = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      depthBuffer: false,
+      stencilBuffer: false,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      generateMipmaps: false,
+    });
+    rt.texture.name = 'LENS.captureHDR';
+    return rt;
+  }
+
+  setSize(width: number, height: number): void {
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+    if (w === this.width && h === this.height) return;
+    this.width = w;
+    this.height = h;
+    this.target.setSize(w, h);
+  }
+
+  frameInto(render: () => void): void {
+    this.pass.enabled = true;
+    try {
+      render();
+    } finally {
+      this.pass.enabled = false;
+    }
+  }
+
+  /** 原点は左下（GL の流儀）。返すのは RGBA の f32（half をデコードした値） */
+  read(
+    renderer: THREE.WebGLRenderer,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ): { pixels: Float32Array; glError: number } {
+    const cw = Math.max(1, Math.min(w | 0, this.width));
+    const ch = Math.max(1, Math.min(h | 0, this.height));
+    const raw = new Uint16Array(cw * ch * 4);
+    const gl = renderer.getContext();
+    while (gl.getError() !== gl.NO_ERROR) {
+      /* drain */
+    }
+    renderer.readRenderTargetPixels(this.target, x | 0, y | 0, cw, ch, raw);
+    const glError = gl.getError();
+    const pixels = new Float32Array(raw.length);
+    for (let i = 0; i < raw.length; i++) pixels[i] = halfToFloat(raw[i]);
+    return { pixels, glError };
+  }
+
+  /**
+   * **測定器の自己検査。** `Capture.selfTest` と同じ規律で、こちらは
+   * **1.0 を超える値を置く** ── この口の存在理由が「1.0 超を区別すること」だからである。
+   * 2.5 / 0.25 / 0.0625 はどれも fp16 で厳密に表せるので、往復は恒等でなければならない。
+   */
+  selfTest(renderer: THREE.WebGLRenderer): CaptureSelfTest {
+    const expected: [number, number, number] = [...HDR_SELFTEST_VALUE];
+    const prevTarget = renderer.getRenderTarget();
+    const prevClear = new THREE.Color();
+    renderer.getClearColor(prevClear);
+    const prevAlpha = renderer.getClearAlpha();
+
+    renderer.setRenderTarget(this.target);
+    renderer.setClearColor(
+      new THREE.Color().setRGB(expected[0], expected[1], expected[2], THREE.LinearSRGBColorSpace),
+      1,
+    );
+    renderer.clear(true, false, false);
+    renderer.setRenderTarget(prevTarget);
+    renderer.setClearColor(prevClear, prevAlpha);
+
+    const { pixels, glError } = this.read(renderer, 0, 0, 1, 1);
+    const actual: [number, number, number] = [pixels[0], pixels[1], pixels[2]];
+    const exact =
+      Object.is(actual[0], expected[0])
+      && Object.is(actual[1], expected[1])
+      && Object.is(actual[2], expected[2]);
+    const ok = glError === 0 && exact;
+    return {
+      ok,
+      expected,
+      actual,
+      glError,
+      message: ok
+        ? 'HDR 読み戻しの往復が厳密に恒等（1.0 超を含む）'
+        : glError !== 0
+          ? `readRenderTargetPixels が GL エラー ${glError} を返した（型が合っていない）`
+          : `HDR 読み戻しが書いた値と一致しない（期待 ${expected.join(',')} / 実測 ${actual.join(',')}）`,
+    };
+  }
+
+  dispose(): void {
+    this.target.dispose();
+    this.pass.dispose();
+  }
+}

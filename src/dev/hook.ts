@@ -71,6 +71,28 @@ export interface LensDevHook {
    * 返す値は sRGB エンコード後の 8bit RGBA。
    */
   readback(x: number, y: number, w: number, h: number): Promise<Uint8Array>;
+  /**
+   * **合成バッファ（HalfFloat）を HDR のまま読む**（Phase 2）。
+   *
+   * `readback()` は鎖の最後の 8bit capture RT を読むので、**1.0 を超えた値と
+   * 1.0 ちょうどを区別できない**。CompressPass が管理する量はまさにそれなので、
+   * あの口だけで圧縮の証拠を出すと「クリップが消えた」ことしか言えない
+   * （正しい強度と 10 倍間違えた強度が同じ見出しを出す）。
+   *
+   * §4.17 の警告どおり **`Uint16Array` で読む** ── `Uint8Array` は例外を投げずに
+   * `INVALID_OPERATION` と全 0 を返す。返すのは half-float をデコードした `Float32Array`。
+   */
+  readbackHDR(x: number, y: number, w: number, h: number): Promise<Float32Array>;
+  /**
+   * ラスタライザの素性（Phase 2）。**すべての数値の隣に出すためにある。**
+   *
+   * 監査サブエージェントが同じページ・同じアンカーで `dimLevel = 0` の峰を
+   * **133**（SwiftShader）と **129**（ANGLE Metal）の 2 通り測った。
+   * `data-lens-render` は `"ok"`、コンソールエラー 0、アンカーは厳密一致 ──
+   * **どこにも「別のラスタライザだ」とは出ていなかった**。
+   * 出力にこれが無い測定は、他人の機体で再現しなかったときに理由を言えない。
+   */
+  glInfo(): { renderer: string; vendor: string; version: string; maxSamples: number };
   /** 現在の測定値一式(平均色・グリッド寸法・実効 gain・点数・ティア) */
   stats(): LensStats;
 
@@ -221,6 +243,8 @@ export function installDevHook(hook: Partial<LensDevHook>): void {
     setGrade: hook.setGrade ?? notReady('setGrade'),
     setCompress: hook.setCompress ?? notReady('setCompress'),
     readback: hook.readback ?? notReady('readback'),
+    readbackHDR: hook.readbackHDR ?? notReady('readbackHDR'),
+    glInfo: hook.glInfo ?? notReady('glInfo'),
     stats: hook.stats ?? notReady('stats'),
     capabilities: hook.capabilities ?? notReady('capabilities'),
     ingestReport: hook.ingestReport ?? notReady('ingestReport'),

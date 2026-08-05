@@ -65,7 +65,7 @@ const EXPECTED: readonly VendoredFile[] = [
     from: 'src/core/engine.ts',
     // NoToneMapping / portraitDolly を移植しない / renderOnce / pxPerWorld / capture
     status: 'MODIFIED',
-    sha256: 'ecf223633765aca3',
+    sha256: '18399a1c5dc84526',
   },
   {
     path: 'src/core/quality.ts',
@@ -79,7 +79,7 @@ const EXPECTED: readonly VendoredFile[] = [
     from: 'src/render/postfx.ts',
     // CompressPass を新設 / bloom・grade を既定オフ / capture パスを受ける
     status: 'MODIFIED',
-    sha256: '787f73e5531f4353',
+    sha256: '0ceb7a3169383af0',
   },
   {
     path: 'src/render/colorPointBatch.ts',

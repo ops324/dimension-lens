@@ -49,7 +49,7 @@ import { clamp01 } from '../math/ease';
 import { composeRotN, foldExtent, liftProject5, safeDist } from '../math/rotationN';
 import type { PlaneRotation } from '../math/rotation';
 import { imageHalfExtents, type GridSpec } from '../image/grid';
-import { buildColumnLine, lineCountFor } from '../image/columnLine';
+import { buildColumnLine, effectiveLineCount, lineCountFor } from '../image/columnLine';
 import { collapseWeight, additionDepth } from '../image/spriteGain';
 import { axisPresence, type BlockScales } from '../image/stats';
 import {
@@ -122,8 +122,10 @@ export interface LensSceneStats {
   gridH: number;
   /** いま描いている点数（バッファによって変わる） */
   pointCount: number;
-  /** 列平均バッファの点数 */
+  /** 列平均バッファの**上限**点数 */
   lineCount: number;
+  /** そのフレームで実際に描いている線の点数（Phase 2 の `effectiveLineCount`） */
+  linePoints: number;
   /** セル 1 個あたりの device px */
   s0: number;
   /** `gl_PointSize`（device px） */
@@ -191,6 +193,11 @@ export class LensScene {
   /** 列平均線の base。**フィールド宣言はコンストラクタの `applySource` より前でなければならない**
    * （`useDefineForClassFields` は宣言順に初期化するので、後ろに書くと書き込みが上書きされる） */
   private lineBase = new Float32Array(N);
+  /**
+   * いま線バッファに入っている点数（`effectiveLineCount`）。**`lineCount` とは別物。**
+   * `-1` は「まだ一度も組んでいない」── 0 や 1 は正当な値なので番兵に使えない。
+   */
+  private linePoints = -1;
   private gridConfig = { s0: 0, s0y: 0, spritePx: 0, gain: 1, calibrated: true };
   private lineConfig = { s0: 0, s0y: 0, spritePx: 0, gain: 1, calibrated: true };
   private probe: TextureProbe | null = null;
@@ -266,11 +273,34 @@ export class LensScene {
       { base: lineBase, colors: this.line.colors },
     );
     this.lineBase = lineBase;
+    this.linePoints = this.lineCount;
     this.line.commitColors();
     // 退化は画像ごとに決まる。空間軸(u,v)は常に存在する
     this.axisPresent = axisPresence(source.scales);
     // フレーミングの保持は画像が変われば無効
     this.heldDistance = 0;
+  }
+
+  /**
+   * 線バッファを `n` 点で組み直す（Phase 2）。**源は正準バッファの `columnMeans`** ──
+   * すでに組んだ 378 点を足し合わせ直すのではない（§4.7 の「縮約は正準バッファから」）。
+   *
+   * 呼ぶのは `n` が変わったときだけ。`extentX` は `dimLevel` からしか動かないので、
+   * 定常状態では 1 フレームに 0 回である。
+   */
+  private rebuildLine(n: number): void {
+    if (n === this.linePoints) return;
+    this.linePoints = n;
+    buildColumnLine(
+      this.source.columnMeans,
+      this.source.width,
+      this.source.height,
+      this.source.gamut,
+      this.source.scales,
+      n,
+      { base: this.lineBase, colors: this.line.colors },
+    );
+    this.line.commitColors();
   }
 
   setDimLevel(d: number): void {
@@ -391,8 +421,11 @@ export class LensScene {
     const grid = kind === 'grid';
     const batch = grid ? this.points : this.line;
     const other = grid ? this.line : this.points;
+    // 潰れた軸は **CPU 側で先に畳む**（Phase 2）。`extentX = 1` では `lineCount` に
+    // 厳密に戻るので `dimLevel = 1` の絵は 1 ビットも動かない（`effectiveLineCount`）。
+    if (!grid) this.rebuildLine(effectiveLineCount(this.extent[0], this.lineCount));
     const base = grid ? this.source.base : this.lineBase;
-    const count = grid ? this.source.grid.cols * this.source.grid.rows : this.lineCount;
+    const count = grid ? this.source.grid.cols * this.source.grid.rows : this.linePoints;
 
     liftProject5(base, count, this.matrix, this.cascadeDist, batch.positions);
     batch.commit(count);
@@ -412,12 +445,27 @@ export class LensScene {
 
     // ---- 潰しの補正 ----
     const cfg = grid ? this.gridConfig : this.lineConfig;
+    /**
+     * **`extentX` そのものではなく「間隔の比」を渡す。**
+     *
+     * `collapseWeight` は現在の間隔を `extentX · s0x` として作るが、点を
+     * `linePoints` 本へ畳んだあとの実際の間隔は `extentX · s0x · lineCount / linePoints`
+     * である（畳んだぶん 1 点あたりの受け持ちが広がる）。`ref` の側は較正された
+     * 基準格子の間隔 `s0x` のままでなければならないので、**分子だけを直す**。
+     *
+     * `extentX = 1` では `linePoints = lineCount` なので比は厳密に 1 で、
+     * 1b の値が 1 ビットも動かない。`extentX = 0` では `linePoints = 1` なので
+     * `axisCoverage(0, 1, S) = 1` ── 1 個のスプライトの中心そのものになる。
+     */
+    const spacingX = grid
+      ? this.extent[0]
+      : (this.extent[0] * this.lineCount) / Math.max(1, this.linePoints);
     const collapse = {
       s0x: cfg.s0,
       s0y: cfg.s0y,
-      extentX: this.extent[0],
+      extentX: spacingX,
       extentY: grid ? this.extent[1] : 0,
-      nx: grid ? this.source.grid.cols : this.lineCount,
+      nx: grid ? this.source.grid.cols : this.linePoints,
       ny: grid ? this.source.grid.rows : 1,
       spritePx: cfg.spritePx,
     };
@@ -530,8 +578,10 @@ export class LensScene {
       buffer: grid ? 'grid' : 'columnMeans',
       gridW: this.source.grid.cols,
       gridH: this.source.grid.rows,
-      pointCount: grid ? this.source.grid.cols * this.source.grid.rows : this.lineCount,
+      pointCount: grid ? this.source.grid.cols * this.source.grid.rows : this.linePoints,
       lineCount: this.lineCount,
+      // 実際に描いている線の点数（Phase 2）。`lineCount` は上限、こちらが実数
+      linePoints: this.linePoints,
       s0: cfg.s0,
       spritePx: cfg.spritePx,
       gain: cfg.gain,

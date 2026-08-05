@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "teeth": "node scripts/teeth.mjs",
-    "bench": "vitest bench --run"
+    "bench": "vitest bench --run",
+    "ladder": "node scripts/ladder.mjs"
   },
   "dependencies": {
     "three": "0.185.1"
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/three": "0.185.1",
+    "playwright-core": "^1.62.1",
     "typescript": "~5.9.3",
     "vite": "^7.3.6",
     "vitest": "^3.2.7"

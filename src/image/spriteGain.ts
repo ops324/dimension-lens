@@ -256,6 +256,62 @@ export function additionDepth(c: CollapseConfig): number {
   return Math.max(1, Math.round(nx * ny));
 }
 
+// ------------------------------------------------- 潰れた図の「中心」と画素格子の位相
+
+/**
+ * 図の中心から、**最も近いフラグメント中心**までの距離（device px、軸ごと）。
+ *
+ * ## なぜこれが要るのか（Phase 2 で実測。G9 の −17.58% の大半がこれだった）
+ *
+ * `collapseWeight` は SPEC §2.3 の
+ * 「**図の中心のフラグメント**が、その段階で意図した縮約値そのものを読む」を実装している。
+ * ところが `dimLevel = 0` では図が 1 個のスプライトへ潰れ、**その中心にフラグメントは無い**。
+ *
+ * 図の中心は NDC 原点 ── ウィンドウ座標では `(W/2, H/2)` である。DPR 2 の
+ * drawingBuffer は常に偶数×偶数なので、これは常に**画素の角**に落ちる。
+ * フラグメント中心は半整数にあるので、最も近い 4 つが**各軸ちょうど 0.5 px** 離れる。
+ *
+ * 実測（988×778・S = 8.654148・F = 21）: 峰は単一画素ではなく
+ * **2×2 の平坦部**（493/494 × 388/389 がすべて sRGB 129）になり、
+ * その値は真の中心値の `exp(−F·2·(0.5/S)²) =` **0.8691864** 倍である。
+ *
+ * これは GPU の欠陥ではなく、**「値が定義されている点に標本が無い」という測定の問題**である。
+ * 重みでは直せない ── 直せるのは定義か、図の置き方だけ。
+ * G9 は再構成した中心値を採点する（`spritePhaseFactor`）。
+ */
+export function centreFragmentOffset(bufferWidth: number, bufferHeight: number): {
+  x: number;
+  y: number;
+} {
+  const off = (size: number): number => {
+    const c = size / 2;
+    // 最も近いフラグメント中心は floor(c) + 0.5。角に落ちれば厳密に 0.5
+    return Math.abs(c - (Math.floor(c) + 0.5));
+  };
+  return { x: off(bufferWidth), y: off(bufferHeight) };
+}
+
+/**
+ * 位相減衰 `w = exp(−F·r²)`、`r = |offset| / S`（`gl_PointCoord` 単位）。
+ *
+ * **これはモデルであって測定ではない。** だから使う側は、モデルが成り立つ前提
+ * （4 つの近傍フラグメントが等しい ── 図が本当に 1 個のスプライトである）を
+ * **測ってから**割る。前提が崩れていたら再構成せず落とす（`scripts/ladder.mjs` の G9）。
+ *
+ * 独立に検証済み（Phase 2・一様グレー 1024×640 を投入し、加算項をすべて等しくした）:
+ *
+ * | dimLevel | 位相のみの予測 | 実測 |
+ * |---|---|---|
+ * | 2（2 次元格子・両軸とも位相が平均される） | 141 | 140〜141 |
+ * | 1（線・y だけ潰れる） | **136.54** | 136〜137 |
+ * | 0（点・両軸潰れる） | **132.20** | **132** |
+ */
+export function spritePhaseFactor(offsetX: number, offsetY: number, spritePx: number): number {
+  if (!(spritePx > 0)) return 1;
+  const r2 = (offsetX * offsetX + offsetY * offsetY) / (spritePx * spritePx);
+  return Math.exp(-F * r2);
+}
+
 /**
  * 平坦場のリップル(peak-to-peak / 平均)。テストと定数探索のための参照実装。
  * セル単位で評価する ── 格子点間隔 1、光る半径 `k/2`。

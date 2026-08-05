@@ -51,6 +51,36 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * ここへ書く。** そうすると次のフェーズが同じ確認を無料で再実行できる。
  */
 const MUTATIONS = [
+  // ---- Phase 2a で足した歯 ----
+  //
+  // G9 の −17.58% は 2 つの因子の積だった。**node で採点できるのはその「割り方」**で、
+  // 実際に読める値は `npm run ladder` が実 GPU で見る。ここで守るのは前者だけである。
+  { phase: '2a', name: '中心の位相を常に 0 にする（＝ 図の中心にフラグメントが在ると仮定する）',
+    file: 'src/image/spriteGain.ts',
+    find: '    return Math.abs(c - (Math.floor(c) + 0.5));',
+    replace: '    return 0;' },
+  { phase: '2a', name: '位相減衰を恒等にする（1c まで暗黙にそう扱っていた）',
+    file: 'src/image/spriteGain.ts',
+    find: '  const r2 = (offsetX * offsetX + offsetY * offsetY) / (spritePx * spritePx);\n  return Math.exp(-F * r2);',
+    replace: '  void offsetX; void offsetY;\n  return 1;' },
+  { phase: '2a', name: '位相の減衰に F を使わない（k を取り違える）',
+    file: 'src/image/spriteGain.ts',
+    find: '  return Math.exp(-F * r2);', replace: '  return Math.exp(-K_SPRITE * r2);' },
+  { phase: '2a', name: '潰れた軸を畳まない（1b の挙動へ戻す = 深度 378）',
+    file: 'src/image/columnLine.ts',
+    find: '  const n = Math.round(extentX * max);\n  return n < 1 ? 1 : n > max ? max : n;',
+    replace: '  return max;' },
+  { phase: '2a', name: '畳んだ点数の下限を 0 にする（1 点すら描かなくなる）',
+    file: 'src/image/columnLine.ts',
+    find: '  if (!(extentX > 0)) return 1;', replace: '  if (!(extentX > 0)) return 0;' },
+  { phase: '2a', name: 'half-float の非正規数を 0 に潰す（暗い列が消えたことを観測できなくする）',
+    file: 'src/core/capture.ts',
+    find: '  if (e === 0) return s * m * 2 ** -24;', replace: '  if (e === 0) return 0;' },
+  { phase: '2a', name: 'HDR 自己検査の値を 1.0 以下にする（1.0 超を区別する口の意味が消える）',
+    file: 'src/core/capture.ts',
+    find: 'export const HDR_SELFTEST_VALUE: readonly [number, number, number] = [2.5, 0.25, 0.0625];',
+    replace: 'export const HDR_SELFTEST_VALUE: readonly [number, number, number] = [0.5, 0.25, 0.0625];' },
+
   // ---- Phase 1c で足した歯 ----
   { phase: '1c', name: 'safeDist をリテラル 2.4 に', observed: 5,
     file: 'src/ingest/session.ts',
