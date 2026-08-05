@@ -13,7 +13,8 @@
     "test": "vitest run",
     "teeth": "node scripts/teeth.mjs",
     "bench": "vitest bench --run",
-    "ladder": "node scripts/ladder.mjs"
+    "ladder": "node scripts/ladder.mjs",
+    "ladder:teeth": "node scripts/ladder.mjs --teeth"
   },
   "dependencies": {
     "three": "0.185.1"
