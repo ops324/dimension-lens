@@ -120,6 +120,19 @@ export function createPhases(): RotationPhases {
 }
 
 /**
+ * 位相を厳密に 0 へ戻す。**測定の再現性のためだけにある**（Phase 1b で追加）。
+ *
+ * `freezeRotation(true)` は位相を保持するので、「凍結したから再現可能」は偽である ──
+ * **どの位相で凍結したかが結果を決める**。しかも測定の手順そのもの
+ * （`setDimLevel` も `setPath` も `renderOnce(1)` を打つ）が位相を進めるので、
+ * 門が開いている領域では手順の違いがそのまま数値の違いになる。
+ */
+export function resetPhases(phases: RotationPhases): RotationPhases {
+  phases.fill(0);
+  return phases;
+}
+
+/**
  * 位相を 1 ステップ進める。**純関数**（`phases` を in-place で更新して返す）。
  *
  * 窓の中では `gate = 0` なので `phases` は 1 ビットも動かない ──

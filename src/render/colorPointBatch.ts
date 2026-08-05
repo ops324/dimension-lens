@@ -7,6 +7,10 @@
 //   - 深度キュー用の aBright を削除（写真の忠実性が目的なので明るさを触らない）
 //   - gl_PointSize をセル間隔から導く（kSprite 倍）+ 正規化ゲイン uGain
 //   - falloff の既定 17（親の線用）→ F = 21（spriteGain.ts の実測値）
+//   - **Phase 1b: uSampleWeight を追加**（潰しの補正）。uGain / uWeight とは
+//     別の uniform でなければならない理由は setSampleWeight のコメントに書いた
+//   - **Phase 1b: configure が s0y と calibrated を返す**（潰しの較正と、
+//     gainFor の較正域を外れたことを sceneStats へ出すため）
 
 /**
  * R⁵ の格子点を投影した点群。
@@ -33,7 +37,7 @@
  */
 
 import * as THREE from 'three';
-import { F, K_SPRITE, gainFor } from '../image/spriteGain';
+import { F, K_SPRITE, gainFor, isCalibratedS0 } from '../image/spriteGain';
 
 export interface ColorPointBatchOptions {
   /** カメラに寄ったときの暴走防止（device px）。GL の上限は別途クランプされる */
@@ -68,6 +72,7 @@ precision highp float;
 uniform float uF;
 uniform float uGain;
 uniform float uWeight;   // 板とのクロスフェード。アンカー窓の中では厳密に 0
+uniform float uSampleWeight;  // 潰しの補正（spriteGain.ts の collapseWeight）。d=2 で厳密に 1
 
 varying vec3 vColor;
 
@@ -81,7 +86,7 @@ void main() {
 
   // AdditiveBlending は (SrcAlpha, One)。alpha は 1.0 固定で輝度は rgb へ集約する。
   // 色は**リニア光**のまま出す ── sRGB エンコードは鎖の最後（OutputPass）が 1 回だけ行う。
-  gl_FragColor = vec4(vColor * (uGain * uWeight * w), 1.0);
+  gl_FragColor = vec4(vColor * (uGain * uSampleWeight * uWeight * w), 1.0);
 }
 `;
 
@@ -129,6 +134,7 @@ export class ColorPointBatch {
         uF: { value: F },
         uGain: { value: 1 },
         uWeight: { value: 1 },
+        uSampleWeight: { value: 1 },
       },
       vertexShader: VERTEX_SHADER,
       fragmentShader: FRAGMENT_SHADER,
@@ -160,22 +166,26 @@ export class ColorPointBatch {
   configure(params: {
     /** セル間隔（ワールド単位）= 2·aX / cols */
     cellWorld: number;
+    /** 縦のセル間隔 = 2·aY / rows。省略すると正方セルとみなす */
+    cellWorldY?: number;
     /** 深度 1 でのワールド→device px 倍率 = drawingBufferHeight / (2·tan(fov/2)) */
     pxPerWorld: number;
     /** 平坦場のカメラ距離 */
     distance: number;
     /** GL の gl_PointSize 上限 */
     maxPointSize: number;
-  }): { s0: number; spritePx: number; gain: number } {
+  }): { s0: number; s0y: number; spritePx: number; gain: number; calibrated: boolean } {
     const { cellWorld, pxPerWorld, distance, maxPointSize } = params;
-    const s0 = (cellWorld * pxPerWorld) / Math.max(distance, 1e-3);
+    const d = Math.max(distance, 1e-3);
+    const s0 = (cellWorld * pxPerWorld) / d;
+    const s0y = ((params.cellWorldY ?? cellWorld) * pxPerWorld) / d;
     const gain = gainFor(s0);
     const u = this.material.uniforms;
     u.uSpriteWorld.value = cellWorld * K_SPRITE;
     u.uPxPerWorld.value = pxPerWorld;
     u.uMaxSize.value = Math.min(maxPointSize, 4096);
     u.uGain.value = gain;
-    return { s0, spritePx: K_SPRITE * s0, gain };
+    return { s0, s0y, spritePx: K_SPRITE * s0, gain, calibrated: isCalibratedS0(s0) };
   }
 
   /** 位置バッファの反映と描画点数の設定 */
@@ -201,6 +211,18 @@ export class ColorPointBatch {
     // 厳密に 0 のときは描画そのものを外す（加算なので 0 でも無害だが、
     // 「アンカー窓では点群が 1 フラグメントも走らない」を観測可能にする）
     this.object.visible = w > 0;
+  }
+
+  /**
+   * 潰しの補正（`collapseWeight`）。**`uGain` にも `uWeight` にも掛けない。**
+   *
+   * `uGain` へ掛けると `configure()` が上書きするので「リサイズしたら明るさが戻る」
+   * という時々しか出ない壊れ方をする（`uWeight` が既に踏んでいた罠と同型）。
+   * `uWeight` へ掛けると、`setWeight(0)` の「描画そのものを外す」判定に巻き込まれて
+   * `dimLevel = 0` で点群が消える。**第 3 の uniform でなければならない。**
+   */
+  setSampleWeight(weight: number): void {
+    this.material.uniforms.uSampleWeight.value = weight > 0 && Number.isFinite(weight) ? weight : 1;
   }
 
   dispose(): void {

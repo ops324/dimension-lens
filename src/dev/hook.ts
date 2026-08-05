@@ -50,6 +50,15 @@ export interface LensDevHook {
   setDimLevel(d: number): void;
   /** 全回転平面の角速度と現在角を 0 に固定/解除する */
   freezeRotation(frozen: boolean): void;
+  /**
+   * 位相を厳密に 0 へ戻す（Phase 1b）。**「凍結したから再現可能」は偽である。**
+   *
+   * `freezeRotation` は位相を保持するので、**どの位相で凍結したかが結果を決める**。
+   * しかも測定の手順そのもの（`setDimLevel` も `setPath` も `renderOnce(1)` を打つ）が
+   * 位相を進める ── 門の飽和域では 1 フレームで平面 (0,2) が 0.105° 回る。
+   * フレーミングの保持（`framingHold`）もここで落ちる。
+   */
+  resetRotation(): void;
   /** UnrealBloomPass の有効/無効 */
   setBloom(enabled: boolean): void;
   /** GradePass(色収差・ビネット・グレイン)の有効/無効 */
@@ -99,19 +108,35 @@ export interface LensDevHook {
   } | null;
 }
 
-/** `LensStats` は Phase 0 で形を決めた分。1a-iii が増やした分はこちら */
+/** `LensStats` は Phase 0 で形を決めた分。1a-iii と 1b が増やした分はこちら */
 export interface LensSceneReport {
   dimLevel: number;
   anchored: boolean;
   plateWeight: number;
   cloudWeight: number;
+  /** 描画中のバッファ（Phase 1b） */
+  buffer: 'grid' | 'columnMeans';
   gridW: number;
   gridH: number;
   pointCount: number;
+  /** 列平均バッファの点数（Phase 1b） */
+  lineCount: number;
   s0: number;
   spritePx: number;
   gain: number;
+  /** `gainFor` の較正域の内側か（Phase 1b）。外れたら数値は信用しない */
+  calibrated: boolean;
+  /** 潰しの補正（Phase 1b）。`dimLevel = 2` で厳密に 1 */
+  sampleWeight: number;
+  /** half-float に積まれる加算回数の見積もり（Phase 1b）。**点数ではない** */
+  additionDepth: number;
   cameraDistance: number;
+  /** ホールド前の、その位相での厳密な必要距離（Phase 1b） */
+  needDistance: number;
+  /** 投影後の図の広がり（Phase 1b）。`zHi` は max z であって max|z| ではない */
+  spread: { aX: number; aY: number; zHi: number };
+  /** 帯に対する充填。**1 を超えたらはみ出している**（Phase 1b） */
+  fill: { x: number; y: number };
   cascadeDist: number;
   frozen: boolean;
   pathOverride: 'auto' | 'plate' | 'cloud';
@@ -158,6 +183,7 @@ export function installDevHook(hook: Partial<LensDevHook>): void {
     renderOnce: hook.renderOnce ?? notReady('renderOnce'),
     setDimLevel: hook.setDimLevel ?? notReady('setDimLevel'),
     freezeRotation: hook.freezeRotation ?? notReady('freezeRotation'),
+    resetRotation: hook.resetRotation ?? notReady('resetRotation'),
     setBloom: hook.setBloom ?? notReady('setBloom'),
     setGrade: hook.setGrade ?? notReady('setGrade'),
     setCompress: hook.setCompress ?? notReady('setCompress'),

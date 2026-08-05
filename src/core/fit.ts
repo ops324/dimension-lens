@@ -57,3 +57,138 @@ export function fillRatios(
     y: aY / (distance * t * band),
   };
 }
+
+/**
+ * 図の投影後の広がり。**`imageHalfExtents` は `dimLevel = 2` でしかこれと一致しない。**
+ *
+ * `zHi` は**カメラに一番近い z**（`max z`）であって `max|z|` ではない ──
+ * 遠い側は画面上で小さくなるだけなので、フレーミングを決めない。
+ */
+export interface Spread {
+  readonly aX: number;
+  readonly aY: number;
+  readonly zHi: number;
+}
+
+/**
+ * `fillRatios` は `fitDistance` の**逆関数である**（Phase 1b で判明）。
+ *
+ * `fillRatios(i, fitDistance(i))` は `fill` に恒等に潰れるので、`fovDeg` も
+ * `DEFAULT_FILL` も検査できない ── 監査が実際に壊して確認した:
+ *
+ * | 壊し方 | 既存 222 件 |
+ * |---|---|
+ * | `fitDistance` を 1.05 倍 | ❌ 36 件失敗 |
+ * | **半角変換 `/360` を `/180` へ（両関数とも）** | ✅ **緑（穴）** |
+ * | **`DEFAULT_FILL` 0.86 → 0.95** | ✅ **緑（穴）** |
+ *
+ * `d = max(a)/(fill·t)` を `a/(d·t)` に代入すると `t` も `fill` も約分されるためで、
+ * **39 件のフレーミングテストが画角の半角変換を一度も検証していなかった。**
+ *
+ * → 判定は `fillRatios` を通さず、**画角から独立に作った実座標**を NDC へ落として見る
+ * （`framing.test.ts` は three の投影行列を採点者にしている）。
+ * 深度 `D − z` での可視半径は `(D − z)·t`（縦）/ `(D − z)·t·aspect`（横）である。
+ */
+export function ndcExtents(
+  input: FitInput,
+  spread: Spread,
+  distance: number,
+): { x: number; y: number } {
+  const { viewportAspect, bandFrac, fovDeg } = input;
+  const t = Math.tan((fovDeg * Math.PI) / 360);
+  const band = bandFrac > 0 ? bandFrac : 1;
+  const depth = distance - spread.zHi;
+  if (!(depth > 0)) return { x: Number.POSITIVE_INFINITY, y: Number.POSITIVE_INFINITY };
+  return {
+    x: spread.aX / (depth * t * viewportAspect),
+    y: spread.aY / (depth * t * band),
+  };
+}
+
+/** 板（z ≡ 0 の矩形）の広がり */
+export function plateSpread(aX: number, aY: number): Spread {
+  return { aX, aY, zHi: 0 };
+}
+
+/** 2 つの広がりの和集合。**板と点群の両方を見る**（片方だけだとアンカーの充填がずれる） */
+export function unionSpread(a: Spread | null, b: Spread | null): Spread {
+  if (!a) return b ?? { aX: 0, aY: 0, zHi: 0 };
+  if (!b) return a;
+  return {
+    aX: Math.max(a.aX, b.aX),
+    aY: Math.max(a.aY, b.aY),
+    zHi: Math.max(a.zHi, b.zHi),
+  };
+}
+
+/**
+ * 図が帯に収まるカメラ距離。**`fitDistance` の後方互換な一般化**（Phase 1b）。
+ *
+ * ## なぜ `fitDistance` だけでは足りないのか（実測）
+ *
+ * `fitDistance` は図が **z = 0 の平面にある**ことを仮定している。`dimLevel > 2` では
+ * 透視カスケードを通った点が z 方向へ広がり、`z > 0` の点はカメラに近いので
+ * 画面上で拡大される。標本 No.0（HIGH 格子・位相を 1200 秒回した全域）:
+ *
+ * | | 実測 | `imageHalfExtents` 比 |
+ * |---|---|---|
+ * | `max|x|` | 1.9315 | **1.93 倍** |
+ * | `max|y|` | 1.8503 | **2.96 倍** |
+ * | `max z` | 1.8710 | —— |
+ *
+ * アンカーの距離 1.9636（viewport 1.27）に対し `max z = 1.8710` は余裕 **0.0926**、
+ * viewport アスペクト 1.6 以上なら距離が 1.5585 まで縮むので **点がカメラを越える**。
+ * `gl_PointSize` の分母 `max(-mv.z, 1e-3)` が潰れて巨大なスプライトになるが、
+ * **GL エラーは出ない**（`F_CLAMP` も不発火 ── 全域 `maxRatio = 0.4965`）。
+ *
+ * ## 式
+ *
+ * カメラは +z にあり、深度 `D − z` での可視半径は `(D − z)·t·(aspect | band)`。
+ * よって `D ≥ z + a/(fill·t·…)`。**`zHi = 0` のとき `fitDistance` と厳密に一致する**
+ * ので（`0 + d === d`）、アンカーの構図は 1 ビットも動かない ──
+ * `framing.test.ts` が `Object.is` でこれを固定する。
+ *
+ * 分離した上界（`max z` と `max|x|` を別々に取る）なので、両者が別の点で起きるときは
+ * わずかに保守的である。`dimLevel = 2` では `z ≡ 0` なので**厳密**。
+ */
+export function needDistance(input: FitInput, spread: Spread): number {
+  const base = fitDistance({ ...input, aX: spread.aX, aY: spread.aY });
+  return spread.zHi > 0 ? spread.zHi + base : base;
+}
+
+/**
+ * フレーミング距離の保持則。**回転で呼吸させないための唯一の仕掛け。**
+ *
+ * ## なぜ毎フレームそのまま使えないのか（実測）
+ *
+ * 回転位相を 120 秒ぶん掃くと、投影後の広がりは `dimLevel = 3` で
+ * **max|x| が 0.0367 〜 1.8965（50 倍）** の幅で動く。図が本当に一点へ潰れる位相が
+ * あるためで（法線が p3/p4 の側を向くと、投影で落ちる）、毎フレーム厳密に合わせると
+ * カメラが 3.6 倍の幅で寄り引きする ── 絵が脈打つ。
+ *
+ * ## なぜ「dimLevel だけの包絡」も採れないのか（代数で確定）
+ *
+ * 角度は `gate·τ`、`τ̇ = gate·ω` なので、**`gate > 0` なら τ は上限なく増え、
+ * 到達可能な角度集合は全トーラスになる**。つまり「その dimLevel で到達しうる最大」は
+ * アンカー窓の縁で不連続に跳ぶ（実測: `d = 2.1` の 1.958 → `d = 2.2` の 3.454）。
+ * しかも `d = 2.2` では π/2 に達するまで **6.1 分**かかるので、
+ * 「gate で補間する」も 6 分後に包絡を割る。
+ *
+ * ## 採った規則
+ *
+ * **ピークホールド（減衰なし）＋ dimLevel が動いたら現在値へリセット。**
+ *
+ * - 図は絶対に帯から出ない（`D ≥ need` が常に成り立つ）
+ * - 呼吸は**厳密にゼロ**（単調非減少なので縮む向きに動かない）
+ * - `dimLevel` を動かした瞬間に厳密な必要距離へ戻る ── だから
+ *   **アンカーへ戻れば構図は 1a-iii と画素まで同じ**になる
+ *
+ * 代償は隠さない: 同じ `dimLevel` に長く留まると、新しい極値が見つかるたびに
+ * 図が単調に小さくなり、包絡へ収束する（実測: `d = 3` で 10 秒かけて
+ * 3.128 → 4.825、**1.54 倍**）。「留まっていると絵が引いていく」は
+ * Phase 2/3 が見直す対象として記録しておく。
+ */
+export function framingHold(previous: number, need: number, reset: boolean): number {
+  if (reset || !(previous > 0) || !Number.isFinite(previous)) return need;
+  return need > previous ? need : previous;
+}
