@@ -11,6 +11,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "teeth": "node scripts/teeth.mjs",
     "bench": "vitest bench --run"
   },
   "dependencies": {
