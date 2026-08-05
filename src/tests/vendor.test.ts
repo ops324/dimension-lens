@@ -59,6 +59,35 @@ const EXPECTED: readonly VendoredFile[] = [
     status: 'MODIFIED', // projectStereographic を削除
     sha256: 'cef78789aea91f55',
   },
+  // ---- Phase 1a-iii ----
+  {
+    path: 'src/core/engine.ts',
+    from: 'src/core/engine.ts',
+    // NoToneMapping / portraitDolly を移植しない / renderOnce / pxPerWorld / capture
+    status: 'MODIFIED',
+    sha256: 'a0a7531ac1661735',
+  },
+  {
+    path: 'src/core/quality.ts',
+    from: 'src/core/quality.ts',
+    // エスカレーションを移植しない（Phase 2）/ ティアと点数予算を 1 表に
+    status: 'MODIFIED',
+    sha256: 'a58815029fc5d08d',
+  },
+  {
+    path: 'src/render/postfx.ts',
+    from: 'src/render/postfx.ts',
+    // CompressPass を新設 / bloom・grade を既定オフ / capture パスを受ける
+    status: 'MODIFIED',
+    sha256: '787f73e5531f4353',
+  },
+  {
+    path: 'src/render/colorPointBatch.ts',
+    from: 'src/render/pointBatch.ts',
+    // 点ごとの色 / InstancedBufferGeometry / F=21 / 正規化ゲイン
+    status: 'MODIFIED',
+    sha256: 'b34c1527c27f27ba',
+  },
 ];
 
 function read(rel: string): string {
