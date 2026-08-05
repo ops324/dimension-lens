@@ -134,18 +134,44 @@ const MUTATIONS = [
     find: 'geometry.instanceCount = 1;', replace: 'geometry.instanceCount = Infinity;' },
 ];
 
+/** 色を消す。**CI は ANSI を出す** ── 下記 `failCount` の事故の原因だった */
+const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
+function stripAnsi(s) {
+  return s.replace(ANSI, '');
+}
+
 function run(cmd, args) {
+  // 色は明示的に切る。出力の形が環境で変わると、それを読む側が静かに壊れる
+  const env = { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' };
   try {
-    return { code: 0, out: execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' }) };
+    const out = execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', env });
+    return { code: 0, out: stripAnsi(out) };
   } catch (e) {
-    return { code: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    return { code: e.status ?? 1, out: stripAnsi(`${e.stdout ?? ''}${e.stderr ?? ''}`) };
   }
 }
 
-/** vitest の出力から「落ちた件数」を読む。落ちていなければ 0 */
+/**
+ * 落ちた件数。**判定には使わない ── 報告のためだけ。**
+ *
+ * 初版はこれを hard gate にしていて、**CI で 22 本すべてを「抜けた」と誤報した**。
+ * ローカルはパイプ越しで色が消えていたが、GitHub Actions では ANSI が付き、
+ * 正規表現が一致せず件数が 0 になったためである。
+ * **「壊したのに落ちなかった」と「出力を読めなかった」を、同じ 0 で表していたのが誤り。**
+ * §7.2 の「測定器そのものが壊れている場合」そのもので、この道具は
+ * 自分の失敗モードを 1 度踏んでから直っている。
+ *
+ * → **判定は vitest の終了コード**（環境に依らない）。件数は色を消してから読み、
+ *   読めなければ `null` を返して「読めなかった」と表示する。
+ */
 function failCount(out) {
-  const m = out.match(/Tests\s+(?:\[[\d;]*m)*(\d+)\s+failed/);
-  return m ? Number(m[1]) : 0;
+  const m = out.match(/Tests\s+(\d+)\s+failed/);
+  return m ? Number(m[1]) : null;
+}
+
+/** vitest が本当にテストを走らせたか（クラッシュを「落ちた」と読み違えないため） */
+function ranTests(out) {
+  return /Test Files\s+\d+/.test(out) || /Tests\s+\d+/.test(out);
 }
 
 const only = process.argv[2];
@@ -187,10 +213,20 @@ try {
     writeFileSync(path, src);
 
     const failed = failCount(r.out);
-    if (r.code === 0 || failed === 0) {
+    if (!ranTests(r.out)) {
+      // vitest が走らなかった（設定の壊れ・クラッシュ）。**「歯が噛んだ」と読まない**
+      console.log(`❌ ${m.name}\n   vitest がテストを走らせていない ── 判定できない（${m.file}）`);
+      console.log(r.out.split('\n').slice(-8).join('\n'));
+      results.push({ ...m, status: 'stale' });
+      exitCode = 1;
+    } else if (r.code === 0) {
       console.log(`❌ ${m.name}\n   壊しても緑のまま。**この歯は抜けている**（${m.file}）`);
       results.push({ ...m, status: 'no-bite', failed: 0 });
       exitCode = 1;
+    } else if (failed === null) {
+      // 落ちてはいる（終了コードが語っている）。件数だけ読めなかった
+      console.log(`✅ ${m.name} → 落ちた（件数を読めず）`);
+      results.push({ ...m, status: 'ok', failed: null });
     } else if (failed < m.observed) {
       console.log(`⚠️  ${m.name} → ${failed} 件（${m.phase} 時点は ${m.observed} 件。減っている）`);
       results.push({ ...m, status: 'weaker', failed });
