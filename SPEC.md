@@ -1,8 +1,9 @@
 # DIMENSION-LENS 仕様書
 
-> 版: **Phase 1a-ii 時点**（取り込み —— [#8](https://github.com/ops324/dimension-lens/pull/8) マージ済み）
-> 公開: <https://ops324.github.io/dimension-lens/>（現状は空ページ。ただし取り込みは動いており、
-> `data-lens-ingest="ok"` が本番ページに出る。描画は Phase 1a-iii から）
+> 版: **Phase 1a-iii 時点**（描画とラダー —— [#10](https://github.com/ops324/dimension-lens/pull/10) マージ済み）
+> 公開: <https://ops324.github.io/dimension-lens/> —— **標本 No.0 が描かれている。**
+> `dimLevel = 2` の板経路は忠実性ラダーを ΔE00 **0.0000** で通っている（§7.6）。
+> スライダー等の UI は Phase 3、潰し（dimLevel 全域）は Phase 1b。
 
 ---
 
@@ -47,7 +48,7 @@ Phase 0 の表に残っていた（GPU 経路の行）。中間を許すと、�
 文書中の約束を機械が見るものへ移し替えたものである。表の行が増えるより、
 テストが増えるほうが望ましい。
 
-### 到達水準（Phase 1a-ii 時点）
+### 到達水準（Phase 1a-iii 時点）
 
 **この見出しは長らく「Phase 0 時点の到達水準」のままだった** ── 中身は Phase 1a-i の
 実測（スプライト定数・OKLab 行列・退化判定）を含んでいたので、見出しが表の内容について
@@ -90,6 +91,19 @@ Phase 0 の表に残っていた（GPU 経路の行）。中間を許すと、�
 | **公開ページ上で取り込みが完走する** | **A** | GitHub Pages 実測。`data-lens-ingest="ok"`、worker チャンクがサブパスで解決、外向き 0、コンソールエラー 0（§7.3） |
 | `worker-src` に `blob:` が要る | **偽**（Phase 0 の未検証な仮定） | 「vite の出力形式によっては要るかもしれない」で**確かめずに開けていた**。same-origin チャンクで足りる。§6.1 |
 | Display P3 の入力経路 | **C** | 1a-ii は `gamut: 'srgb'` 固定。4 箇所同時に揃わないと黙って色相が誤り、node では守れない。Phase 1c |
+| **`dimLevel = 2` が「あなたの写真そのもの」** | **A**（Phase 1a まで C） | 板経路 ΔE00 **0.0000**（平坦・ランプ 8 段・ホイール 24 パッチのすべて）／雲経路 0.4217 以下。§7.6 |
+| **アンカー窓で回転角が厳密に 0** | **A** | `rotationSchedule.test.ts` が `Object.is(角度, 0)`。窓を通過して戻っても位相が保存 |
+| **板と点群の合成則**（和が厳密に 1） | **A** | アンカーで板 1・点群**厳密 0**。規定が無いと平坦部が 2 倍になる（§7.6 の G7） |
+| **スプライト定数が実機で平坦場を再構成する** | **A**（GPU 実測） | 実効ゲイン誤差 **−1.682%**（予算 ±2%）。1a-i の A は CPU 上の格子和だった |
+| **板の拡大補間がリニア光** | **A** | 黒白 2px の中点が sRGB **188**。ガンマ空間仮説との隔たりは ΔE00 **18.662**（§7.6 の G5） |
+| 加算ブレンドが列平均そのものである | **A**（1a-i では B） | composer の線形 HDR ターゲット上で平坦部が正しく再構成される。画面直描画なら飽和する |
+| clear color 漏れの機序 | **A**（1a-i では B・親の実測） | LENS でも再現。**トーンマップを切っているぶん親より悪い**（グレー軸で ΔE00 8.50）。黒固定で無害化 |
+| **読み戻し経路が生きている** | **A** | `data-lens-capture="ok"`。既知の値を書いて読み返す自己検査が、絵より先に通る |
+| **`InstancedBufferGeometry` の既定は絵を消す** | **A** | `instanceCount = Infinity` → 描画 0・GL エラー 0・drawCall 1（§4.15） |
+| **`texture.flipY` は `ImageBitmap` に効かない** | **A** | `WebGLTextures.js:918-926`（§4.16） |
+| **公開ページに絵が出ている** | **A** | GitHub Pages 実測。`data-lens-render="ok"`、コンソールエラー 0（§7.3） |
+| bloom / grade の定数 | **C（自覚あり）** | 親の Phase 11 の値をそのまま置いてある。再測定は Phase 2 |
+| dimLevel > 2 でのフレーミング | **C** | `imageHalfExtents` を根拠にできるのはアンカー付近だけ。投影後の広がりが `dist` に依存する（Phase 1b） |
 | 軸ごと正規化は (3,4) を色相回転でなくする | **B** | `D⁻¹RD ∉ SO(2)`（s_a≠s_b）は代数的に確定。→ ブロック等方正規化 |
 | clear color 漏れの機序 | **B** | 親に実測（`#05060f` が `rgb(22,27,58)` として届く）。LENS では未測定 |
 | 加算ブレンドが列平均そのものである | **B** | 線形 HDR ターゲット上でのみ真。Phase 1b の #3/#4 を通せば A |
@@ -191,6 +205,10 @@ bin の中に埋もれている。純グレースケール（全標本 `r²=0`�
 
 モード B は `2^(n−2)` 枚の複製になるので、**Phase 1 の時点で `colorPointBatch` を
 `InstancedBufferGeometry`（`instanceCount = 1`）で書く**。Phase 1 のコストはゼロ（同じ1ドローコール）。
+
+**この「コストはゼロ」には条件があり、初版は書いていなかった（Phase 1a-iii で実測）。**
+`instanceCount` を**明示的に 1 にしたときだけ**、素の `BufferGeometry` と画素まで同一になる。
+既定値（`Infinity`）のままだと**1 画素も描かれず、GL エラーも出ない** —— §4.15 を必ず読むこと。
 
 ### 3.1 訂正 —— 「Phase 4 は足すだけ」は偽（実測）
 
@@ -421,7 +439,8 @@ r · dist/(dist − r) < dist   ⟺   dist > 2r
 → `lift()` が `maxNorm` を返し、`safeDist(maxNorm)`（`math/rotationN.ts`）が
 `max(2.4, 2.2·maxNorm)` を返す。標本では 3.316。
 
-**Phase 1a-ii で配線した（C → A）。** 初版の本節は「Phase 1a-iii は必ずこれを呼ぶこと」と
+**Phase 1a-ii で配線し、Phase 1a-iii が実際に使っている（C → A）。**
+`lensScene` が `cascadeDist` として `liftProject5` へ渡す（起動実測 **3.3838**）。 初版の本節は「Phase 1a-iii は必ずこれを呼ぶこと」と
 書いていたが、**「必ず呼ぶこと」は仕組みではない** ── 呼び忘れても `F_CLAMP` があるので
 NaN にはならず、無音で壊れる。だから呼び忘れようのない位置へ移した:
 `ingest/session.ts` が `lift` を呼んだ**その場で** `safeDist(maxNorm)` を計算して応答に載せる。
@@ -592,6 +611,82 @@ Ottosson は丸めた行列を公表しているので、合成では再現で�
 転送後は元が 0×0 になる（実測）。**これを 1a-ii のプロトコルに入れておかないと、
 1a-iii が同じ画像をもう一度デコードすることになる。**
 
+### 4.15 `InstancedBufferGeometry` の既定値は絵を消す（Phase 1a-iii で実測）
+
+`InstancedBufferGeometry.js` の既定は `this.instanceCount = Infinity`。
+per-instance 属性が 1 つも無いと three は `maxInstanceCount` を決められず、
+`gl.drawArraysInstanced(POINTS, 0, n, Infinity)` が発行される。
+WebIDL の `GLsizei` 変換で `Infinity` は **0** になるので:
+
+| | |
+|---|---|
+| 描かれる点 | **0** |
+| `gl.getError()` | **0（NO_ERROR）** |
+| `renderer.info.render.calls` | **1**（ドローコールは出ている） |
+| シェーダのコンパイル | 成功 |
+
+**デバッグの取っ掛かりが 1 つも無い。** `instanceCount = 1` を明示すれば、
+素の `BufferGeometry` と画素・ドローコールまで同一になる（§3 の主張はこの条件つきで真）。
+
+→ `colorPointBatch.test.ts` が `geometry.instanceCount === 1` を機械で見る。
+**`!== Infinity` ではなく `=== 1`** ── 0 や 2 のような誤った有限値も落とすため。
+
+### 4.16 `texture.flipY` は `ImageBitmap` に効かない（Phase 1a-iii で実測）
+
+`WebGLTextures.js:918-926`:
+
+```js
+const isImageBitmap = ( typeof ImageBitmap !== 'undefined' && texture.image instanceof ImageBitmap );
+if ( isImageBitmap === false ) {
+    state.pixelStorei( _gl.UNPACK_FLIP_Y_WEBGL, texture.flipY );
+    …
+}
+```
+
+`ImageBitmap` のときは `UNPACK_FLIP_Y_WEBGL` を**設定しない**ので、既定の `flipY = true` が
+黙って無効になる。取り込み（§4.14）が板を `transferToImageBitmap()` で渡している以上、
+素直に `new THREE.Texture(bitmap)` と書くと**板は上下反転して出る**。
+標本 No.0 はアスペクト 1.6 なので寸法では気づけず、コンソールにも何も出ない。
+
+→ 向きの規則は `createPlateTexture()` **1 関数に閉じ**、`repeat.y = -1 / offset.y = 1` で
+UV 変換として明示的に戻す。**捕まえるゲートは G1 の二面体テストしか無い**ので、
+板を実装したのと同じ PR で書くこと。
+
+**関連して: `repeat` / `offset` は自前シェーダには掛からない。** あれは three の
+組み込みシェーダが `uvTransform` uniform として適用するもので、`texture2D(map, uv)` を
+自分で書いたら一切効かない。G5 のプローブを書いたとき、この規約を二重に通してしまい、
+チェッカーではなく背景の平坦部をサンプルして「白も黒も中点も全部同じ値」という結果を得た。
+
+### 4.17 読み戻しの型 —— `Uint8Array` は無音で全 0 を返す（Phase 1a-iii で実測）
+
+composer のバッファは `HalfFloatType` である（加算合成が HDR を保持するため）。
+これを `Uint8Array` で読むと:
+
+| バッファ | 例外 | `gl.getError()` | 読めた値 |
+|---|---|---|---|
+| `Uint8Array` | **なし** | **1282 = INVALID_OPERATION** | **[0,0,0,0]** |
+| `Uint16Array` | なし | 0 | 正常 |
+
+`WebGLRenderer.readRenderTargetPixels` のガードは `EXT_color_buffer_half_float` があると
+通ってしまう。つまり **§7.2 の #1 が警告している「隅を読んで #000000 を確認」が
+常に緑になる失敗は、`preserveDrawingBuffer` ではなくここで待っている。**
+
+→ 鎖の最後に **8bit の capture RT** を置いてコピーしてから読む。型が一致するので
+`INVALID_OPERATION` は構造的に起きず、読める値は「画面に出るのと同じ sRGB 8bit」になる。
+
+#### 自己検査そのものが「壊れていても緑」になった
+
+`selfTest()` は既知の値を書いて読み返す。**最初この判定を
+「全 0 でなく GL エラーが無ければ良し」と書いた** ── 書いた値と一致するかを見ていない。
+測定器の自己検査が、まさにその測定器の失敗モードを踏んでいた。
+
+原因は色空間で、`setClearColor` に sRGB で渡すと three が working(linear) へ変換してから
+RT へ書くので、読み戻る値は指定した符号値と一致しない。**そこで厳密一致を諦めたのが誤り**で、
+正しくは**リニアのまま指定する**（8bit で厳密に表せる値を置けば往復は恒等でなければならない）。
+
+歯の確認: capture RT を half-float に壊すと `data-lens-capture="broken"` が立ち、
+`readback()` は全 0 を返さず GL エラー 1282 で**投げる**。
+
 ---
 
 ## 5. 移植境界
@@ -724,7 +819,7 @@ object URL の revoke、bfcache 復帰、`localStorage`（品質ティア 1 項�
 
 ## 7. 検証
 
-### 7.1 vitest（Phase 1a-ii 時点で 177 件・全緑）
+### 7.1 vitest（Phase 1a-iii 時点で 222 件・全緑）
 
 **Phase 0:** `math.test.ts`（親からの回帰ロック）/ `rotationN.test.ts`（融合カーネル等価性・
 カスケード不変条件）/ `vendor.test.ts`（出自とチェックサム）/ `privacy.test.ts`（ビルド成果物の静的検査）。
@@ -757,9 +852,18 @@ Ottosson 係数と 1e-9 では**一致しない**こと /
 node で本当に落とせるのは `protocol` / `plan` / probe のバイト列 / 機能検出の**判定ロジック**だけで、
 `decode.ts` の実体と機能検出の**結果**は実ブラウザでしか測れない。
 
-Phase 1a-iii 以降で追加: `rotationSchedule.test.ts`（アンカーで角度が厳密に 0）、
-`colorPointBatch.test.ts`（`instanceCount !== Infinity`、`addUpdateRange` の単位）、
-`engineConfig.test.ts`、潰しの同一性（1b）、プレートの不透明契約と語彙の規律（Phase 3）。
+**Phase 1a-iii:** `rotationSchedule.test.ts`（アンカー窓・門つき位相積分・クロスフェード）/
+`colorPointBatch.test.ts`（**`instanceCount === 1`**・ゲイン較正・シェーダの形）/
+`engineConfig.test.ts`（画角の単一情報源・ティア表・板のテクスチャ設定）。
+
+**1a-iii で足した歯**（実際に壊して落ちることを確かめた）:
+`instanceCount = 1` を消すと落ちる / 板の V 反転を消すと落ちる / mipmap を既定に戻すと落ちる /
+capture RT を half-float にすると自己検査が `broken` を立てて `readback()` が投げる。
+
+`colorPointBatch.test.ts` の予告は初版で `instanceCount !== Infinity` と書いてあったが、
+**`=== 1` に改めた** ── `!== Infinity` は 0 や 2 のような誤った有限値を通してしまう。
+
+Phase 1b 以降で追加: 潰しの同一性（1b）、プレートの不透明契約と語彙の規律（Phase 3）。
 
 ### 7.2 ブラウザ —— 測る道具を先に作る
 
@@ -773,8 +877,9 @@ Phase 1a-iii 以降で追加: `rotationSchedule.test.ts`（アンカーで角度
 
 → `window.__LENS__`（DEV ビルドのみ、`src/dev/hook.ts`）:
 `renderOnce` / `setDimLevel` / `freezeRotation` / `setBloom` / `setGrade` / `setCompress` /
-`readback` / `stats`、そして Phase 1a-ii で
-`capabilities` / `ingestReport` / `ingestBlob` を追加。未実装のメソッドは
+`readback` / `stats`、Phase 1a-ii で `capabilities` / `ingestReport` / `ingestBlob`、
+Phase 1a-iii で **`setPath`**（板経路 / 雲経路の強制。§7.6 が両方を同じゲートに掛けるため）/
+`sceneStats` / **`sampleTexel`**（G5 のための 1 点サンプル）を追加。未実装のメソッドは
 **黙って何もしない**のではなく投げる ——「測ったつもり」が一番高くつく
 （1a-ii 時点で `renderOnce()` が実際に投げることを実機で確認した）。
 
@@ -809,7 +914,7 @@ G2 の許容 ±3%(リニア)は中間調で ΔE00 ≈ **0.67** であって、�
 （§4.6 の ≤ 3.0 は **Phase 1b** の平均色・列平均に対する予算であり、1a とは別物。
 借りてきて 1a を緩めてはいけない。）
 
-### 7.3 公開経路の実測（水準 A・Phase 0 / 1a-ii）
+### 7.3 公開経路の実測（水準 A・Phase 0 / 1a-ii / 1a-iii）
 
 <https://ops324.github.io/dimension-lens/> にて:
 
@@ -844,6 +949,18 @@ vite が `<script>` タグごと出力から落とした。そのままなら
 | 外向きリクエスト | **0**（同一オリジンの 3 本のみ: ページ・index チャンク・worker チャンク） |
 | コンソールエラー | **0** |
 | `window.__LENS__` | `undefined`（本番には載らない） |
+
+**Phase 1a-iii で `data-lens-capture` と `data-lens-render` が加わった。** 公開ページ実測:
+
+| 確認項目 | 結果 |
+|---|---|
+| `data-lens-capture` | ✅ `"ok"` —— **読み戻しの自己検査が本番で通っている** |
+| `data-lens-render` | ✅ `"ok"` —— **標本 No.0 が公開ページに描かれている** |
+| スタイルシート | 1 枚（これが無いと canvas は既定の 300×150 のままで「真っ暗」に見える） |
+| コンソールエラー | **0** |
+
+`data-lens-capture` が `data-lens-render` より**先に**立つ順序に意味がある ──
+測定器が動いていることを、絵より先に確かめている（§7.2）。
 
 ### 7.4 CI アクションのバージョン
 
@@ -972,6 +1089,44 @@ G1〜G6 のどれもそれを見ていない。漏れれば sRGB 38 が出る（
 §7.2 の「検証 8 項目」は G0〜G7 の 8 つと読み替える。プライバシー（§6.2 が #6 と呼んでいるもの）と
 公開経路（§7.3）は**キャンバスの読み戻しに依存しない**ので、この 8 項目とは別に立っている。
 
+#### 実測（水準 A・Chrome 148 / DPR 2 / ティア HIGH / drawingBuffer 988×778）
+
+格子 378×236 = 89,208 点／カメラ距離 1.9636／カスケード dist 3.3838／
+s0 2.248 device px／スプライト 8.65 px／gain 0.45307。ΔE00 は `src/color/deltaE.ts` で計算。
+
+| | 予算 | **板経路** | **雲経路** |
+|---|---|---|---|
+| **G0** 背景 | 厳密 0 | 四隅すべて `[0,0,0]` | — |
+| **G1** 基準点の重心誤差 | ≤ 2 device px | **最大 1.213 px** | — |
+| **G1** 二面体 8 変換 | 全変換で相違 | **7/7 相違** | — |
+| **G1** アスペクト / 充填 | 厳密 / 一辺に接する | **1.6000** / `fillRatios.x = 0.86` | — |
+| **G2a** 平坦部 | ΔE00 ≤ 2.0 | **0.0000** | **0.3806** |
+| **G2b** 実効ゲイン | ±2% | — | **−1.682%** |
+| **G3** ランプ 8 段 | ΔE00 ≤ 2.0・単調は厳密 | **0.0000**・単調 | **0.0000**・単調 |
+| **G4** ホイール 24 | ΔE00 ≤ 2.0 | **0.0000** | **0.4217** |
+| **G4** 平均色相残差 | ≤ 0.5° | **0.0000°** | **−0.0362°**（sd 0.115°） |
+| **G5** 板の拡大補間 | 中点 = sRGB 188 | **188**（ΔE00 0.0000） | — |
+| **G6** オフの再現性 / オンで差 | 画素一致 / 差 > 0 | ✅ / bloom **ΔE00 3.285**・grade 0.381 | — |
+| **G6** CompressPass の恒等性 | 強度 0 で画素一致 | ✅ | — |
+| **G7** 重みの和 | 厳密 1 | アンカー 1+0 / 外 0+1、どちらも**厳密に 1** | |
+
+G5 の 2 仮説の隔たりは **ΔE00 18.662**（188 と 128）なので、この判定は取り違えようがない。
+
+#### G1 の予算を ≤1 px にしなかった理由
+
+最初 ≤1 device px と書いたが、**推定器の窓の取り方で結果が 2.5 px 動いた**
+（正方形窓が L 字基準点の右端を切っていた）。窓を白領域の実際の広がりに合わせると
+L 字 0.037 px / 孤立マーカー 1.213 px。
+
+**推定器の感度が予算より大きいなら、それは予算ではない。**
+サブピクセルのエッジ当てはめが要るなら Phase 2 の仕事にする。
+
+#### 標本の 1px 黒枠は基準点として機能しない（1a-iii で判明）
+
+`fixture.ts` は 1px の黒枠を「板の縁の位置合わせを見る」ために置いているが、
+**背景が黒（§`core/engine.ts` の CLEAR_COLOR）なので区別がつかない。**
+縁の基準点には白マーカーを使うこと。枠が担っているのは「縁が欠けていないこと」までである。
+
 ---
 
 ## 8. 開発の進め方
@@ -1002,8 +1157,8 @@ PR 本文には必ず:
 | **0** | 骨組みと測る道具（CI・CSP・移植・ベンチ・DEV フック） | ✅ [#1](https://github.com/ops324/dimension-lens/pull/1) |
 | **1a-i** | 色と持ち上げの純粋パイプライン（node/vitest のみ） | ✅ [#6](https://github.com/ops324/dimension-lens/pull/6) |
 | **1a-ii** | 取り込み（worker・**EXIF 向きの probe**・機能検出・正準バッファ常駐） | ✅ [#8](https://github.com/ops324/dimension-lens/pull/8) |
-| 1a-iii | 描画とラダー（engine/postfx/点群/板/回転/DEV フック・G1〜G6） | 次 |
-| 1b | 潰し（列平均バッファ・`sampleWeight`・`[0,5]` 全域・平均色） | |
+| **1a-iii** | 描画とラダー（engine/postfx/点群/板/回転/DEV フック・**G0〜G7**） | ✅ [#10](https://github.com/ops324/dimension-lens/pull/10) |
+| 1b | 潰し（列平均バッファ・`sampleWeight`・`[0,5]` 全域・平均色・**dimLevel > 2 のフレーミング**） | 次 |
 | 1c | 取り込みの頑健性と空状態（HEIC・**probe が `'not-applied'` の環境での自前回転と 8 値の検証**・40MP・Display P3・退化・`copy.ts` 全文） | |
 | 2 | 光の質（bloom/grade 再測定・`CompressPass`・quality・光過敏） | |
 | 3 | 作品化（UI・読み出し・キーボード・OGP・モバイルシート） | |
