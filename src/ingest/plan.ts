@@ -49,10 +49,10 @@ export const MAX_SOURCE_PIXELS = 80_000_000;
  */
 export function planResize(width: number, height: number, maxEdge: number): ResizePlan {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
-    throw new RangeError(`planResize: 寸法が不正 (${width}×${height})`);
+    throw new RangeError(`planResize: invalid size (${width}x${height})`);
   }
   if (!Number.isFinite(maxEdge) || maxEdge < 1) {
-    throw new RangeError(`planResize: maxEdge が不正 (${maxEdge})`);
+    throw new RangeError(`planResize: invalid maxEdge (${maxEdge})`);
   }
   const w = Math.floor(width);
   const h = Math.floor(height);

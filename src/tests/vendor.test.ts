@@ -65,7 +65,7 @@ const EXPECTED: readonly VendoredFile[] = [
     from: 'src/core/engine.ts',
     // NoToneMapping / portraitDolly を移植しない / renderOnce / pxPerWorld / capture
     status: 'MODIFIED',
-    sha256: 'a0a7531ac1661735',
+    sha256: 'ecf223633765aca3',
   },
   {
     path: 'src/core/quality.ts',

@@ -134,4 +134,42 @@ describe('プライバシー(ビルド成果物の静的検査)', () => {
     const html = readFileSync(join(DIST, 'index.html'), 'utf8');
     expect(html).toContain('name="referrer" content="no-referrer"');
   });
+
+  /**
+   * **§6.4 の残留物を、まだ 1 つも持っていないことの宣言**（Phase 1c）。
+   *
+   * §6.4 は `FileList`（`input.value=''`）/ object URL の revoke / bfcache 復帰 /
+   * `localStorage` を「Phase 1c で対処する」と書いていた。**対処しない** ──
+   * `<input type="file">` は Phase 3 であり、1c の測定は `__LENS__.ingestBlob` で全部できる。
+   *
+   * 1a-ii が採った規律は「**持ち始めたその PR で閉じる**」であって、
+   * 「1 フェーズ先回りして閉じる」ではない。先回りするには先に**持ち始める**しかなく、
+   * それは規律の適用ではなく反転である（しかも Phase 3 の UI 設計が
+   * 「1c が置いた input」に引きずられる）。
+   *
+   * 代わりに、規律をチェックリストではなく**機械**にする。この 2 件が緑であることは
+   * 「まだ持っていない」という宣言であり（`ingest.test.ts` 末尾の「node にはこれが無い」
+   * 節と同じ形）、Phase 3 が input を足すときは**必ずこのテストを書き換えることになる**。
+   * そのとき `input.value = ''` と `revokeObjectURL` を同じ PR で書かざるをえない。
+   */
+  it('§6.4 の残留物をまだ 1 つも持っていない(Phase 3 が足すときに必ずここへ来る)', () => {
+    const html = readFileSync(join(DIST, 'index.html'), 'utf8');
+    expect(/<input[^>]*type=["']?file/i.test(html), 'index.html に file input がある').toBe(false);
+
+    const offenders: string[] = [];
+    for (const file of collectJs(DIST)) {
+      const src = readFileSync(file, 'utf8');
+      const rel = file.slice(DIST.length + 1);
+      // 品質ティアの永続化（§6.4 の 4 項目目）はまだ入れていない
+      if (/\blocalStorage\b|\bsessionStorage\b/.test(src)) offenders.push(`${rel}: storage`);
+      // object URL も同じ。`img-src` の `blob:` は開けてあるが、まだ使っていない
+      if (/\bcreateObjectURL\b/.test(src)) offenders.push(`${rel}: createObjectURL`);
+      if (/type=["']?file/i.test(src)) offenders.push(`${rel}: file input`);
+    }
+    expect(
+      offenders,
+      '§6.4 の残留物を持ち始めた。**同じ PR で閉じ方も書き**、この宣言を更新すること'
+        + `（見つかった箇所: ${offenders.join(', ')}）`,
+    ).toEqual([]);
+  });
 });

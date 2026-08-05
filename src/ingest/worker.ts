@@ -29,11 +29,16 @@ function reply(res: IngestWorkerMessage): void {
   ctx.postMessage(res, transferablesOf(res));
 }
 
-/** 例外を分類つきの応答へ畳む。**画像の中身が混ざりうる文字列は載せない** */
+/**
+ * 例外を分類つきの応答へ畳む。
+ *
+ * **文字列を 1 本も載せない**（Phase 1c）── 1b は `e.message` をそのまま応答へ写しており、
+ * 「画像の中身を入れない」は規律であって保証ではなかった。いまは `code` と、
+ * 葉が数値と閉じた union だけの `detail` しか越えない。文言は `copy.ts`。
+ */
 function toFailure(id: number, e: unknown): IngestWorkerMessage {
-  if (e instanceof IngestError) return failure(id, e.code, e.message);
-  const name = (e as Error)?.name ?? 'Error';
-  return failure(id, 'internal', `取り込み中に想定外の失敗が起きました（${name}）。`);
+  if (e instanceof IngestError) return failure(id, e.code, e.detail);
+  return failure(id, 'internal');
 }
 
 ctx.onmessage = (event: MessageEvent<IngestClientMessage>) => {
@@ -55,13 +60,7 @@ ctx.onmessage = (event: MessageEvent<IngestClientMessage>) => {
           reply({ kind: 'released', id: req.id });
           return;
         default:
-          reply(
-            failure(
-              (req as { id?: number }).id ?? -1,
-              'protocol',
-              `未知の要求です（${String((req as { kind?: string }).kind)}）。`,
-            ),
-          );
+          reply(failure((req as { id?: number }).id ?? -1, 'protocol'));
       }
     } catch (e) {
       reply(toFailure(req?.id ?? -1, e));

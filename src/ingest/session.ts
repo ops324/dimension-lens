@@ -45,6 +45,46 @@ function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : 0;
 }
 
+/**
+ * 格子を引き、`safeDist` を**同じ場所で**決める純関数。
+ *
+ * ## なぜ private メソッドから出したのか（Phase 1c）
+ *
+ * §4.9 は「呼び忘れようのない位置へ移した」と書き、§0 の表は
+ * 「`safeDist` が実際に配線されている｜**A**」と主張している。**押さえているテストが
+ * 1 本も無かった** ── 実測: `safeDist: safeDist(maxNorm)` を**リテラル `2.4`** に
+ * 置き換えても **276 件が緑のまま**だった。構造の主張が、構造だけで支えられていた。
+ *
+ * `IngestSession` は `decodeToCanonical` を通るので node から呼べない。
+ * だから配線の**この一点だけ**を DOM に触らない純関数として外へ出し、
+ * `ingest.test.ts` が node で採点する。**採点者は `safeDist` の定義を書き戻さず、
+ * `2·maxNorm` という §4.8 の必要条件そのものを見る**（`reconstructMean` 型の
+ * 恒等な変換にしないため。§7.1）。
+ */
+export function makeLiftPayload(
+  canonical: Canonical,
+  grid: GridSpec,
+  scales: BlockScales,
+): LiftPayload {
+  const count = grid.cols * grid.rows;
+  const buffers: LiftBuffers = {
+    base: new Float32Array(count * 5),
+    colors: new Float32Array(count * 3),
+  };
+  const t = now();
+  const { maxNorm } = lift(canonical, grid, scales, buffers);
+  const liftMs = now() - t;
+  return {
+    grid,
+    base: buffers.base,
+    colors: buffers.colors,
+    maxNorm,
+    // dist を決める側が maxNorm を持っていない、という状態を作らない（§4.9）
+    safeDist: safeDist(maxNorm),
+    liftMs,
+  };
+}
+
 export class IngestSession {
   private canonical: Canonical | null = null;
   private stats: ImageStats | null = null;
@@ -59,14 +99,18 @@ export class IngestSession {
   async ingest(req: Pick<IngestRequest, 'source' | 'maxEdge' | 'budget' | 'wantPlate'>): Promise<IngestPayload> {
     const t0 = now();
     const caps = await this.capabilities();
+    // 1b はこれを `decode-failed` で返していた ── **分類の誤り**である。
+    // デコードは 1 バイトも試していないし、失敗しているのは画像ではなくブラウザのほう。
     if (!caps.canIngest) {
-      throw new IngestError('decode-failed', caps.notes.join(' ') || '取り込みできません。');
+      throw new IngestError('unsupported-browser');
     }
 
     const decoded = await decodeToCanonical(req.source, {
       maxEdge: req.maxEdge > 0 ? req.maxEdge : MAX_CANONICAL_EDGE,
       wantPlate: req.wantPlate,
       canResizeInDecoder: caps.canResizeInDecoder,
+      // 色域は機能検出が決めた**唯一の値**を渡す（§4.13 の 4 箇所を 1 か所から導出）
+      gamut: caps.gamut,
     });
 
     const tStats = now();
@@ -117,7 +161,7 @@ export class IngestSession {
 
   relift(budget: number): LiftPayload {
     if (!this.canonical) {
-      throw new IngestError('no-session', 'まだ画像が取り込まれていません。');
+      throw new IngestError('no-session');
     }
     return this.liftInternal(budget);
   }
@@ -127,7 +171,12 @@ export class IngestSession {
    *
    * SPEC §6.4 の残留物のうち、**この 2 つだけは 1a-ii で閉じる** ──
    * 後から足すと「どこで持っているか」の一覧が既に長くなっているため。
-   * `FileList` / object URL / bfcache / localStorage は Phase 1c。
+   *
+   * `FileList` / object URL / bfcache / localStorage は **1c でも持たない**
+   * （`<input type="file">` は Phase 3）。「持ち始めたその PR で閉じる」という規律は、
+   * 「1 フェーズ先回りして閉じる」ではない ── 先回りするには先に**持ち始める**しかなく、
+   * それは規律の適用ではなく反転である。`privacy.test.ts` が
+   * 「dist に file input も localStorage も現れない」を**宣言として**見張っている。
    */
   release(): void {
     this.canonical = null;
@@ -139,27 +188,9 @@ export class IngestSession {
     const canonical = this.canonical;
     const scales = this.scales;
     if (!canonical || !scales) {
-      throw new IngestError('no-session', 'まだ画像が取り込まれていません。');
+      throw new IngestError('no-session');
     }
-    const grid: GridSpec = fitGrid(canonical.width, canonical.height, budget);
-    const count = grid.cols * grid.rows;
-    const buffers: LiftBuffers = {
-      base: new Float32Array(count * 5),
-      colors: new Float32Array(count * 3),
-    };
-    const t = now();
-    const { maxNorm } = lift(canonical, grid, scales, buffers);
-    const liftMs = now() - t;
-    return {
-      grid,
-      base: buffers.base,
-      colors: buffers.colors,
-      maxNorm,
-      // §4.9「Phase 1a-iii は必ずこれを呼ぶこと」を、呼び忘れようのない位置へ移す。
-      // dist を決める側が maxNorm を持っていない、という状態を作らない。
-      safeDist: safeDist(maxNorm),
-      liftMs,
-    };
+    return makeLiftPayload(canonical, fitGrid(canonical.width, canonical.height, budget), scales);
   }
 
   /** 統計を読み直す(relift 後にメインが持ち直す必要はないが、DEV フックが使う) */

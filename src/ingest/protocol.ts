@@ -21,7 +21,13 @@ import type { CapabilityReport } from './capabilities';
 import type { ResizePlan } from './plan';
 
 /** 契約を壊す変更をしたら上げる。worker とメインでズレたら `failed/protocol` を返す */
-export const INGEST_PROTOCOL_VERSION = 1;
+export const INGEST_PROTOCOL_VERSION = 2;
+
+/**
+ * 入力の色域。**4 箇所（csc / canvas / getImageData / Canonical）に散っていた
+ * リテラルを、この 1 つの型へ集約する**（Phase 1c）。§4.13 を参照。
+ */
+export type Gamut = 'srgb' | 'display-p3';
 
 // ---------------------------------------------------------------- 要求
 
@@ -79,7 +85,7 @@ export interface IngestMeta {
   readonly width: number;
   readonly height: number;
   readonly plan: ResizePlan;
-  readonly gamut: 'srgb' | 'display-p3';
+  readonly gamut: Gamut;
   /**
    * デコーダが EXIF の向きを適用したか。**この値は推測ではなく probe の実測**
    * (`orientProbe.ts`)。`'not-applied'` のとき、この画像は横倒しで出ている可能性がある。
@@ -146,24 +152,53 @@ export interface ReleasedResponse {
 }
 
 /**
- * 失敗の分類。**`message` を読んで分岐してはいけない** ── 文言は UI のもので、
- * 分岐は `code` のもの。Phase 1c の空状態がこの集合の上に立つ。
+ * 失敗の分類。**文言は `copy.ts` のもので、分岐は `code` のもの。**
+ *
+ * Phase 1b までは `FailedResponse` が自由文字列の `message` を運んでいた。
+ * それは規律であって保証ではない ──「画像の中身を入れない」がコメントにしか無く、
+ * 呼び出し側が任意の文字列を組める限り、いつ破れても誰も気づかない。
+ * **Phase 1c で `message` を廃止し、`code` + 構造化 `detail` にした**ので、
+ * 文字列を組む場所は `copy.ts` ただ 1 つになった（`copyGuard.test.ts` が機械で見張る）。
  */
 export type IngestFailureCode =
   | 'empty-source'
   | 'decode-failed'
+  /** デコーダが読めない既知の形式（HEIC ほか）。`decode-failed` から分けた（§4.19） */
+  | 'unsupported-format'
   | 'too-many-pixels'
   | 'no-2d-context'
+  /** 機能検出が「このブラウザでは取り込めない」と言った。1b までは `decode-failed` だった */
+  | 'unsupported-browser'
+  /** 要求した色域と `getImageData` が返した色域が食い違った（§4.13 の 4 箇所の突き合わせ） */
+  | 'gamut-mismatch'
   | 'no-session'
   | 'protocol'
   | 'internal';
+
+/**
+ * 失敗に添える構造化された詳細。
+ *
+ * **葉は数値か、この protocol が宣言した閉じた union だけ**である。
+ * 自由文字列を置かないことが「画像の中身が文言へ流れ込む経路が構造的に無い」の中身で、
+ * これは規律ではなく型で守られている（`copy.ts` は `FailureDetail` しか受け取れない）。
+ */
+export type FailureDetail =
+  | { readonly kind: 'pixels'; readonly width: number; readonly height: number }
+  | { readonly kind: 'format'; readonly format: UnsupportedFormatId }
+  | { readonly kind: 'gamut'; readonly requested: Gamut; readonly actual: Gamut | 'unknown' };
+
+/**
+ * デコードできなかった既知の形式。**4 バイトの box brand を、そのまま運ばずに
+ * この閉じた集合へ畳んでから渡す** ── ファイル由来のバイト列を文言側へ渡さないため。
+ */
+export type UnsupportedFormatId = 'heif';
 
 export interface FailedResponse {
   readonly kind: 'failed';
   readonly id: number;
   readonly code: IngestFailureCode;
-  /** 人間が読む文。**技術的詳細を入れてよいが、画像の中身は絶対に入れない** */
-  readonly message: string;
+  /** 数値と閉じた union だけ。文言は `copy.ts` が `code` と合わせて作る */
+  readonly detail?: FailureDetail;
 }
 
 export type IngestWorkerMessage =
@@ -223,13 +258,19 @@ export function transferablesOf(res: IngestWorkerMessage): Transferable[] {
 /**
  * 分類つきの失敗。**`throw new Error()` を使わない** ── worker 境界を越えると
  * スタックも型も落ちるので、越える前に `code` へ畳んでおく。
+ *
+ * `Error.message` は**開発者がコンソールで読むための ASCII の技術文**であって、
+ * 利用者に見せる文ではない（利用者向けは `copy.ts`）。ここに日本語を書くと、
+ * 「文言が 2 か所にある」状態が復活する ── `copyGuard.test.ts` が落とす。
  */
 export class IngestError extends Error {
   readonly code: IngestFailureCode;
-  constructor(code: IngestFailureCode, message: string) {
-    super(message);
+  readonly detail?: FailureDetail;
+  constructor(code: IngestFailureCode, detail?: FailureDetail) {
+    super(`ingest failed: ${code}${detail ? ` ${JSON.stringify(detail)}` : ''}`);
     this.name = 'IngestError';
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -241,7 +282,7 @@ export function isFailure(res: IngestWorkerMessage): res is FailedResponse {
 export function failure(
   id: number,
   code: IngestFailureCode,
-  message: string,
+  detail?: FailureDetail,
 ): FailedResponse {
-  return { kind: 'failed', id, code, message };
+  return detail ? { kind: 'failed', id, code, detail } : { kind: 'failed', id, code };
 }

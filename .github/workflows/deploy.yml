@@ -33,6 +33,18 @@ jobs:
       # 「常に緑」という最悪の失敗モードなので、あちらは skip せず落ちるようにしてある。
       - run: npm run build
       - run: npm test
+      # 歯の確認（Phase 1c で仕組みにした）。
+      #
+      # `npm test` は「テストが緑か」しか見ない。**緑には 2 種類ある** ──
+      # 守っているから緑なのと、何も守っていないから緑なのと。後者は
+      # 予算を緩く書いたときと、テストが恒等な変換に潰れたときに生まれ、
+      # 人間には見えない（緩い方向に外しても誰も落ちない）。
+      # `npm run teeth` は台帳の変異を 1 つずつ入れて「本当に落ちるか」を確かめる。
+      # 落ちなくなった歯があれば CI が赤くなる。
+      #
+      # PR で走らせる価値がある: §7.1 の `reconstructMean` も §7.7 の `fillRatios` も、
+      # これが在れば発見が何フェーズも早かった。
+      - run: npm run teeth
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist

@@ -22,7 +22,7 @@ export async function specimenBlob(): Promise<Blob> {
   if (typeof OffscreenCanvas === 'function') {
     const c = new OffscreenCanvas(s.width, s.height);
     const ctx = c.getContext('2d');
-    if (!ctx) throw new Error('標本のエンコードに必要な 2D コンテキストが取れません。');
+    if (!ctx) throw new Error('specimen encode: no 2d context');
     ctx.putImageData(data, 0, 0);
     return await c.convertToBlob({ type: 'image/png' });
   }
@@ -31,9 +31,9 @@ export async function specimenBlob(): Promise<Blob> {
   c.width = s.width;
   c.height = s.height;
   const ctx = c.getContext('2d');
-  if (!ctx) throw new Error('標本のエンコードに必要な 2D コンテキストが取れません。');
+  if (!ctx) throw new Error('specimen encode: no 2d context');
   ctx.putImageData(data, 0, 0);
   return await new Promise<Blob>((resolve, reject) => {
-    c.toBlob((b) => (b ? resolve(b) : reject(new Error('標本を PNG にできません。'))), 'image/png');
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('specimen encode: toBlob returned null'))), 'image/png');
   });
 }

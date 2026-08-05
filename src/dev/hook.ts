@@ -22,7 +22,7 @@
  */
 
 import type { CapabilityReport } from '../ingest/capabilities';
-import type { IngestMeta } from '../ingest/protocol';
+import type { FailureDetail, IngestFailureCode, IngestMeta } from '../ingest/protocol';
 
 /**
  * 取り込みの結果のうち、**ブラウザから測りたい分だけ**。
@@ -84,6 +84,32 @@ export interface LensDevHook {
   /** 任意の画像を取り込み経路へ通す(忠実性測定と EXIF の実機確認に使う) */
   ingestBlob(source: Blob): Promise<LensIngestReport>;
   /**
+   * **直近の失敗**（Phase 1c）。成功すると `null` に戻る。
+   *
+   * これが無いあいだ、空状態は**機械から観測できなかった** ── `ingestReport()` は
+   * 失敗しても前の画像の報告をそのまま返し、`data-lens-ingest` は起動時の `"ok"` が
+   * 立ったままだった。「空状態のテストを書いたが、壊れていても緑」という
+   * §7.2 の失敗モードが、1c のフェーズそのものの中で待っていた。
+   */
+  lastFailure(): { code: IngestFailureCode; detail?: FailureDetail } | null;
+  /**
+   * 描画バッファの寸法を**測定器の側から**確定させる（Phase 1c）。
+   *
+   * ブラウザペインの `resize_window` は**ページの `resize` イベントを発火しない**ので、
+   * canvas が古い寸法のまま「自己整合した嘘の値」を返す（1b で踏んだ）。
+   * `dispatchEvent(new Event('resize'))` を撃つ回避策もあるが、それは
+   * **測定手順が測定器の外にある**ということで、手順書どおりにやっても値が一致しない。
+   *
+   * 実測（Phase 1c）: ペイン既定（CSS 889×859 / buffer 1778×1718）では
+   * `s0 = 4.045` / カメラ距離 `2.409` になり、§7.7 のアンカー
+   * （`s0 = 2.2478…` / `1.9635…`）と**一致しない**。アンカーの再実行は
+   * drawingBuffer を **988×778** に合わせて初めて意味を持つ。
+   *
+   * 返り値は実際に確定した `drawingBuffer` の寸法。**要求値ではなく実測値を返す**
+   * ── 一致しなかったことを呼び出し側が見られなければ、また「自己整合した嘘」になる。
+   */
+  setViewport(cssWidth: number, cssHeight: number): { width: number; height: number };
+  /**
    * 板経路 / 雲経路のどちらか一方だけを描かせる（Phase 1a-iii）。
    *
    * SPEC §7.2 は「板経路と雲経路で別のゲートを持たない」── 両方が ΔE00 ≤ 2.0 を
@@ -130,6 +156,13 @@ export interface LensSceneReport {
   sampleWeight: number;
   /** half-float に積まれる加算回数の見積もり（Phase 1b）。**点数ではない** */
   additionDepth: number;
+  /**
+   * 5 軸 `[u, v, L, a, b]` が**この画像に存在するか**（Phase 1c・SPEC §2.2）。
+   * 退化した軸は `extent` が 0 に固定される。
+   */
+  axisPresent: boolean[];
+  /** そのフレームの `extent`。退化軸は `dimLevel` に依らず 0 */
+  extent: number[];
   cameraDistance: number;
   /** ホールド前の、その位相での厳密な必要距離（Phase 1b） */
   needDistance: number;
@@ -192,6 +225,8 @@ export function installDevHook(hook: Partial<LensDevHook>): void {
     capabilities: hook.capabilities ?? notReady('capabilities'),
     ingestReport: hook.ingestReport ?? notReady('ingestReport'),
     ingestBlob: hook.ingestBlob ?? notReady('ingestBlob'),
+    lastFailure: hook.lastFailure ?? notReady('lastFailure'),
+    setViewport: hook.setViewport ?? notReady('setViewport'),
     setPath: hook.setPath ?? notReady('setPath'),
     sceneStats: hook.sceneStats ?? notReady('sceneStats'),
     sampleTexel: hook.sampleTexel ?? notReady('sampleTexel'),

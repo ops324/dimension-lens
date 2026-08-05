@@ -10,7 +10,14 @@
 //   - `pxPerWorld()` を追加（スプライト寸法の唯一の換算元）
 //   - starfield / lineMaterial / afterRender / gallery 由来の口を削除
 //   - コンテキストロストは `data-lens-gl="lost"` を立てて**黙って死なない**ところまで
-//     （復帰と空状態 UI は Phase 1c）
+//     （復帰は Phase 3。空状態 UI は Phase 1c で `src/ui/emptyState.ts` に入れた）
+//   - **Phase 1c**: `viewportWidth/Height` を static から**インスタンスメソッド**へ移し、
+//     `forcedSize` で上書きできるようにした。`resize(cssW, cssH)` と
+//     `drawingBufferSize()` を追加 ── どちらも**測定器のため**である。
+//     ブラウザペインの `resize_window` はページの `resize` を発火しないので、
+//     canvas が古い寸法のまま「自己整合した嘘の値」を返す（1b で踏んだ）。
+//     ペイン既定（buffer 1778×1718）では s0 が 4.045 になり、§7.7 のアンカー
+//     2.2478 と一致しない ── アンカーの再実行には寸法の固定が要る
 
 import * as THREE from 'three';
 import { buildPostFX, type PostFX } from '../render/postfx';
@@ -89,8 +96,8 @@ export class Engine {
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.renderer.setClearColor(CLEAR_COLOR, 1);
 
-    const width = Engine.viewportWidth();
-    const height = Engine.viewportHeight();
+    const width = this.viewportWidth();
+    const height = this.viewportHeight();
     const pixelRatio = this.pixelRatio();
 
     this.renderer.setPixelRatio(pixelRatio);
@@ -173,7 +180,7 @@ export class Engine {
 
   /** 非遮蔽帯の高さ比。`fitDistance({ bandFrac })` に渡す値と同じ源から出す */
   bandFrac(): number {
-    const h = Engine.viewportHeight();
+    const h = this.viewportHeight();
     const free = h - this.safeTop - this.safeBottom;
     return free > 0 ? free / h : 1;
   }
@@ -251,8 +258,8 @@ export class Engine {
     this.resizeTimer = 0;
     if (this.contextLost) return;
 
-    const width = Engine.viewportWidth();
-    const height = Engine.viewportHeight();
+    const width = this.viewportWidth();
+    const height = this.viewportHeight();
     const pixelRatio = this.pixelRatio();
 
     this.renderer.setPixelRatio(pixelRatio);
@@ -277,8 +284,8 @@ export class Engine {
       camera.clearViewOffset();
       return;
     }
-    const width = Engine.viewportWidth();
-    const height = Engine.viewportHeight();
+    const width = this.viewportWidth();
+    const height = this.viewportHeight();
     const offsetY = (this.safeBottom - this.safeTop) / 2;
     camera.setViewOffset(width, height, 0, offsetY, width, height);
   };
@@ -292,12 +299,50 @@ export class Engine {
     console.error('[LENS] WebGL コンテキストを失いました。ページを再読み込みしてください。');
   };
 
-  private static viewportWidth(): number {
+  /**
+   * 測定用に固定した CSS 寸法。`null` なら window から取る。
+   *
+   * **測定器のためだけにある。** ブラウザペインの `resize_window` はページの
+   * `resize` イベントを発火せず、canvas が古い寸法のまま「自己整合した嘘の値」を
+   * 返す（1b で踏んだ）。`dispatchEvent(new Event('resize'))` で回避できるが、
+   * それは**測定手順が測定器の外にある**ということで、手順書どおりにやっても
+   * 値が一致しない事故（Phase 1c 実測: ペイン既定だと s0 が 4.045 になり、
+   * §7.7 のアンカー 2.2478 と一致しない）を防げない。
+   */
+  private forcedSize: { width: number; height: number } | null = null;
+
+  private viewportWidth(): number {
+    if (this.forcedSize) return this.forcedSize.width;
     return Math.max(1, Math.floor(window.innerWidth));
   }
 
-  private static viewportHeight(): number {
+  private viewportHeight(): number {
+    if (this.forcedSize) return this.forcedSize.height;
     return Math.max(1, Math.floor(window.visualViewport?.height ?? window.innerHeight));
+  }
+
+  /**
+   * 描画バッファの寸法を明示的に確定させる（Phase 1c・**測定用**）。
+   *
+   * デバウンスを通さず**同期に**適用する ── `RESIZE_DEBOUNCE_MS` を待つあいだに
+   * 測定を始めると、また古い寸法を読むことになる。
+   */
+  /** 実際の描画バッファ寸法。**要求値ではなく、いま GL が持っている値** */
+  drawingBufferSize(): { width: number; height: number } {
+    this.renderer.getDrawingBufferSize(this.bufferSize);
+    return { width: this.bufferSize.x, height: this.bufferSize.y };
+  }
+
+  resize(cssWidth: number, cssHeight: number): void {
+    this.forcedSize = {
+      width: Math.max(1, Math.floor(cssWidth)),
+      height: Math.max(1, Math.floor(cssHeight)),
+    };
+    if (this.resizeTimer !== 0) {
+      window.clearTimeout(this.resizeTimer);
+      this.resizeTimer = 0;
+    }
+    this.applyResize();
   }
 
   private pixelRatio(): number {

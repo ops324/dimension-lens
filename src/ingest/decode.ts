@@ -32,8 +32,9 @@
 
 import { linearizeRgba } from '../image/linearize';
 import type { Canonical } from '../image/stats';
+import { sniffBlob } from './format';
 import { exceedsSourceLimit, planResize, type ResizePlan } from './plan';
-import { IngestError, type OrientationSupport } from './protocol';
+import { IngestError, type Gamut, type OrientationSupport } from './protocol';
 
 type AnyCanvas = OffscreenCanvas | HTMLCanvasElement;
 type Any2d = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
@@ -43,6 +44,29 @@ export interface DecodeOptions {
   readonly wantPlate: boolean;
   /** `capabilities.ts` の実測。false なら最初から canvas で縮小する */
   readonly canResizeInDecoder: boolean;
+  /**
+   * 入力の色域。**この 1 つの値が canvas・`getImageData`・`linearizeRgba` の
+   * 3 箇所すべてへ流れる**（Phase 1c）。
+   *
+   * 1b までは `getImageData(..., { colorSpace: 'srgb' })` と
+   * `linearizeRgba(..., 'srgb')` が**独立したリテラル**で、canvas 側は
+   * そもそも指定していなかった（＝ 4 箇所のうち 1 つは「揃えている」のではなく
+   * 「触っていない」）。実測で、**片方だけ `'display-p3'` へ変えても 276 件が緑のまま**
+   * だった ── §1 の優先度 1（色相の正しさ）違反が、テストに一切引っかからなかった。
+   */
+  readonly gamut: Gamut;
+}
+
+/**
+ * `getImageData` が返した色空間を、こちらの閉じた union へ畳む。
+ * 知らない値は `'unknown'` へ倒す ── `'srgb'` に倒すと嘘をつく。
+ *
+ * **export してあるのは node で採点するため。** `decodeToCanonical` 自体は
+ * `createImageBitmap` を要求するので node から呼べず、突き合わせの `throw` そのものは
+ * ブラウザでしか測れない（§7.1 の宣言済み境界）。畳み方だけはここで落とせる。
+ */
+export function normalizeGamut(actual: string): Gamut | 'unknown' {
+  return actual === 'srgb' || actual === 'display-p3' ? actual : 'unknown';
 }
 
 export interface DecodeResult {
@@ -76,17 +100,23 @@ function makeCanvas(w: number, h: number): AnyCanvas {
     c.height = h;
     return c;
   }
-  throw new IngestError('no-2d-context', 'キャンバスを作れません。');
+  throw new IngestError('no-2d-context');
 }
 
 /**
  * 2D コンテキストを取る。**キャンバスは必ず使い捨て** ──
  * 同じ要素への 2 回目の `getContext('2d', 別属性)` は最初の context を返し、
  * `willReadFrequently` を**黙って無視する**(実測)。
+ *
+ * `colorSpace` は §4.13 の 4 箇所のうちの 1 つ。**1b までは指定していなかった**ので、
+ * 「揃っている」のではなく「既定に任せていた」状態だった。
  */
-function get2d(canvas: AnyCanvas): Any2d {
-  const ctx = canvas.getContext('2d', { willReadFrequently: true }) as Any2d | null;
-  if (!ctx) throw new IngestError('no-2d-context', '2D コンテキストを取得できません。');
+function get2d(canvas: AnyCanvas, gamut: Gamut): Any2d {
+  const ctx = canvas.getContext('2d', {
+    willReadFrequently: true,
+    colorSpace: gamut,
+  }) as Any2d | null;
+  if (!ctx) throw new IngestError('no-2d-context');
   return ctx;
 }
 
@@ -95,10 +125,10 @@ export async function decodeToCanonical(
   opts: DecodeOptions,
 ): Promise<DecodeResult> {
   if (!(source.size > 0)) {
-    throw new IngestError('empty-source', 'ファイルが空です。');
+    throw new IngestError('empty-source');
   }
   if (typeof createImageBitmap !== 'function') {
-    throw new IngestError('decode-failed', 'この環境には createImageBitmap がありません。');
+    throw new IngestError('unsupported-browser');
   }
 
   // ---- 1 段目: 向きが適用された原寸を得る（ここで初めて「長辺」が確定する）----
@@ -106,11 +136,14 @@ export async function decodeToCanonical(
   let stage1: ImageBitmap;
   try {
     stage1 = await createImageBitmap(source);
-  } catch (e) {
-    throw new IngestError(
-      'decode-failed',
-      `この形式の画像を読めませんでした（${(e as Error)?.name ?? 'unknown'}）。`,
-    );
+  } catch {
+    // **例外の中身では分類できない**（`format.ts` 参照 ── 9 種の入力で name も message も同一）。
+    // 失敗した**あとで**先頭 12 バイトを見る。デコードを先に試すので、
+    // HEIC を読める実装（Safari 18.6 で実測）からは何も奪わない。
+    const format = await sniffBlob(source);
+    throw format
+      ? new IngestError('unsupported-format', { kind: 'format', format })
+      : new IngestError('decode-failed');
   }
   const decodeMs = now() - t0;
   const decodedWidth = stage1.width;
@@ -118,10 +151,11 @@ export async function decodeToCanonical(
 
   if (exceedsSourceLimit(decodedWidth, decodedHeight)) {
     stage1.close();
-    throw new IngestError(
-      'too-many-pixels',
-      `画像が大きすぎます（${decodedWidth}×${decodedHeight}）。`,
-    );
+    throw new IngestError('too-many-pixels', {
+      kind: 'pixels',
+      width: decodedWidth,
+      height: decodedHeight,
+    });
   }
 
   const plan = planResize(decodedWidth, decodedHeight, opts.maxEdge);
@@ -154,7 +188,7 @@ export async function decodeToCanonical(
 
   // ---- 読み戻し ----
   const canvas = makeCanvas(plan.width, plan.height);
-  const ctx = get2d(canvas);
+  const ctx = get2d(canvas, opts.gamut);
   const t2 = now();
   if (work.width === plan.width && work.height === plan.height) {
     ctx.drawImage(work, 0, 0);
@@ -164,8 +198,23 @@ export async function decodeToCanonical(
     ctx.drawImage(work, 0, 0, plan.width, plan.height);
     resizePath = 'canvas';
   }
-  const imageData = ctx.getImageData(0, 0, plan.width, plan.height, { colorSpace: 'srgb' });
+  const imageData = ctx.getImageData(0, 0, plan.width, plan.height, { colorSpace: opts.gamut });
   const readbackMs = now() - t2;
+
+  // **要求と実際を突き合わせる。**（Phase 1c）
+  //
+  // 1b までは `imageDataColorSpace` を `RawCapabilities` に記録するだけで、
+  // **一度も比較していなかった** ── 「気づける形で残す」と書いてあったが、
+  // 気づく主体がどこにもいなかった。食い違いは黙って色相を誤らせる
+  // （`primariesFor` が別の原色行列を選ぶ）ので、進まずに止まる。
+  const actualGamut = normalizeGamut(imageData.colorSpace);
+  if (actualGamut !== opts.gamut) {
+    throw new IngestError('gamut-mismatch', {
+      kind: 'gamut',
+      requested: opts.gamut,
+      actual: actualGamut,
+    });
+  }
 
   // ---- 板（Phase 1a-iii が使うテクスチャ源）----
   // ここで取っておかないと 1a-iii が同じ画像をもう一度デコードすることになる。
@@ -181,7 +230,7 @@ export async function decodeToCanonical(
 
   // ---- リニア化（LUT はここでちょうど 1 回）----
   const t3 = now();
-  const canonical = linearizeRgba(imageData.data, plan.width, plan.height, 'srgb');
+  const canonical = linearizeRgba(imageData.data, plan.width, plan.height, opts.gamut);
   const linearizeMs = now() - t3;
 
   return {
