@@ -177,20 +177,23 @@ export class Capture {
    * 書いた値でなければ、以降のどの数値も意味を持たない。
    */
   selfTest(renderer: THREE.WebGLRenderer): CaptureSelfTest {
-    const expected: [number, number, number] = [0x12, 0x34, 0x56];
+    // **リニア空間で指定する。** sRGB で渡すと three が working(linear) へ変換してから
+    // RT へ書くので、読み戻る値は指定した符号値と一致しない ── そこで
+    // 「厳密一致」を諦めて「全 0 でなければ良し」に緩めると、
+    // **測定器の自己検査そのものが「壊れていても緑」になる。**
+    // 8bit で厳密に表せる値をリニアのまま置けば、往復は恒等でなければならない。
+    const expected: [number, number, number] = [128, 64, 32];
     const prevTarget = renderer.getRenderTarget();
     const prevClear = new THREE.Color();
     renderer.getClearColor(prevClear);
     const prevAlpha = renderer.getClearAlpha();
 
     renderer.setRenderTarget(this.target);
-    // setClearColor は working color space で解釈されるので、
-    // 8bit RT へそのまま書くために正規化値を直接指定する
     renderer.setClearColor(new THREE.Color().setRGB(
       expected[0] / 255,
       expected[1] / 255,
       expected[2] / 255,
-      THREE.SRGBColorSpace,
+      THREE.LinearSRGBColorSpace,
     ), 1);
     renderer.clear(true, false, false);
     renderer.setRenderTarget(prevTarget);
@@ -198,22 +201,27 @@ export class Capture {
 
     const { pixels, glError } = this.read(renderer, 0, 0, 1, 1);
     const actual: [number, number, number] = [pixels[0], pixels[1], pixels[2]];
-    // クリアは working(linear) → RT へ書かれる際に色空間変換が入りうるので、
-    // 「厳密一致」ではなく「読み戻し経路が生きている」ことを見る:
-    // 全 0 かつ glError が立っている、が捕まえたい失敗である。
+    // ドライバの丸めだけを許す（±1）。それ以上ずれたら往復が恒等ではない
+    const maxErr = Math.max(
+      Math.abs(actual[0] - expected[0]),
+      Math.abs(actual[1] - expected[1]),
+      Math.abs(actual[2] - expected[2]),
+    );
     const allZero = actual[0] === 0 && actual[1] === 0 && actual[2] === 0;
-    const ok = glError === 0 && !allZero;
+    const ok = glError === 0 && maxErr <= 1;
     return {
       ok,
       expected,
       actual,
       glError,
       message: ok
-        ? '読み戻し経路は生きている'
+        ? `読み戻しの往復が恒等（最大誤差 ${maxErr}）`
         : glError !== 0
           ? `readRenderTargetPixels が GL エラー ${glError} を返した`
             + '（half-float RT を Uint8Array で読んでいる可能性）'
-          : '読み戻しが全 0 を返した。この状態のテストは壊れていても緑になる',
+          : allZero
+            ? '読み戻しが全 0 を返した。この状態のテストは壊れていても緑になる'
+            : `読み戻しが書いた値と一致しない（期待 ${expected.join(',')} / 実測 ${actual.join(',')}）`,
     };
   }
 
