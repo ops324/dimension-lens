@@ -74,6 +74,47 @@ export interface LensDevHook {
   ingestReport(): LensIngestReport | null;
   /** 任意の画像を取り込み経路へ通す(忠実性測定と EXIF の実機確認に使う) */
   ingestBlob(source: Blob): Promise<LensIngestReport>;
+  /**
+   * 板経路 / 雲経路のどちらか一方だけを描かせる（Phase 1a-iii）。
+   *
+   * SPEC §7.2 は「板経路と雲経路で別のゲートを持たない」── 両方が ΔE00 ≤ 2.0 を
+   * 通らなければならない。ところが出荷時のクロスフェードはアンカー窓で点群を
+   * 厳密に 0 にするので、**そのままでは雲経路を dimLevel=2 で測れない**。
+   * `'auto'` が出荷時の挙動で、他の 2 つは測定器のための口である。
+   */
+  setPath(mode: 'auto' | 'plate' | 'cloud'): void;
+  /** シーン側の測定値（スプライト寸法・ゲイン・カメラ距離・カスケード dist） */
+  sceneStats(): LensSceneReport;
+  /**
+   * 板のテクスチャを**画像画素座標**で 1 点サンプルする（G5）。
+   *
+   * 整数 + 0.5 がテクセル中心、整数ちょうどが隣り合うテクセルの**中点**
+   * （＝ 補間がリニア光かガンマ空間かを問う位置）。画面の読み戻しでは
+   * 板の倍率と位相が viewport 次第で、中点を一度もサンプルしないことがある。
+   */
+  sampleTexel(imgX: number, imgY: number): {
+    rgb: [number, number, number];
+    glError: number;
+    uv: [number, number];
+  } | null;
+}
+
+/** `LensStats` は Phase 0 で形を決めた分。1a-iii が増やした分はこちら */
+export interface LensSceneReport {
+  dimLevel: number;
+  anchored: boolean;
+  plateWeight: number;
+  cloudWeight: number;
+  gridW: number;
+  gridH: number;
+  pointCount: number;
+  s0: number;
+  spritePx: number;
+  gain: number;
+  cameraDistance: number;
+  cascadeDist: number;
+  frozen: boolean;
+  pathOverride: 'auto' | 'plate' | 'cloud';
 }
 
 export interface LensStats {
@@ -125,5 +166,8 @@ export function installDevHook(hook: Partial<LensDevHook>): void {
     capabilities: hook.capabilities ?? notReady('capabilities'),
     ingestReport: hook.ingestReport ?? notReady('ingestReport'),
     ingestBlob: hook.ingestBlob ?? notReady('ingestBlob'),
+    setPath: hook.setPath ?? notReady('setPath'),
+    sceneStats: hook.sceneStats ?? notReady('sceneStats'),
+    sampleTexel: hook.sampleTexel ?? notReady('sampleTexel'),
   };
 }
