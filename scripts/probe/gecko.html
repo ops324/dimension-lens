@@ -1,0 +1,105 @@
+<!doctype html>
+<!--
+  Gecko（Firefox）の EXIF 向き判定を 1 回だけ測るためのページ（Phase 2a）。
+
+  SPEC §4.12 は 3 実装 × Orientation 1〜8 = 24 セルを測り、**残る未測定は Gecko だけ**と
+  書いている。そして「測れないのではなく**入れていない**」── A へ上げる手段は
+  **probe を 1 回開くこと**だけである。
+
+  ローカルには Firefox を入れない（そう決めた）。代わりに GitHub の runner イメージに
+  **Mozilla Firefox 152.0.6** が入っていることを `gh api` で確かめたので、CI で 1 回開く。
+
+  ## なぜ本番の経路をそのまま通すのか
+
+  `src/ingest/orientProbe.ts` の関数をそのまま呼ぶ。ここで判定を書き直すと、
+  **測っているのは probe ではなく、この HTML に書いた別の実装**になる
+  （§7.1「参照実装は独立に書く」の裏返しで、こちらは*同じ*ものを通す必要がある ──
+  知りたいのは「出荷している probe が Gecko で何を返すか」だから）。
+
+  ## 結果の返し方
+
+  `fetch('/COLLECT?...')` を同一オリジンへ 1 本。このページに CSP は載っていない
+  （載っている本番の `index.html` とは別のファイルである）。
+  `npm run build` の入力ではないので `dist` には入らない ── `privacy.test.ts` は無傷。
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>LENS Gecko orientation probe</title>
+    <style>
+      body { font: 16px/1.6 system-ui, sans-serif; padding: 2rem; }
+      #out { font-size: 2rem; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <p>Gecko orientation probe</p>
+    <div id="out">running…</div>
+    <pre id="detail"></pre>
+    <script type="module">
+      import {
+        orientProbeBytes,
+        probeOrientationSupport,
+        decideOrientationSupport,
+        PROBE_UNORIENTED,
+        PROBE_ORIENTED,
+        PROBE_ORIENTATION_TAG,
+      } from '/src/ingest/orientProbe.ts';
+
+      // 回収先は runner が `?collect=` で渡す。**vite とは別ポート**である ──
+      // dev サーバへ `/COLLECT` を差し込むと、測るために dev サーバの設定を変えることになる。
+      const collect = new URLSearchParams(location.search).get('collect');
+
+      const report = async (payload) => {
+        document.getElementById('out').textContent = payload.support;
+        document.getElementById('detail').textContent = JSON.stringify(payload, null, 2);
+        if (!collect) return;
+        try {
+          await fetch(collect + '?r=' + encodeURIComponent(JSON.stringify(payload)));
+        } catch (e) {
+          document.getElementById('detail').textContent += '\nCOLLECT failed: ' + e;
+        }
+      };
+
+      (async () => {
+        const payload = {
+          ua: navigator.userAgent,
+          probeBytes: orientProbeBytes().length,
+          orientationTag: PROBE_ORIENTATION_TAG,
+          expectUnoriented: PROBE_UNORIENTED,
+          expectOriented: PROBE_ORIENTED,
+        };
+        try {
+          // **判定は出荷している関数そのものに出させる。** ここで書き直すと、
+          // 測っているのは probe ではなく、この HTML に書いた別の実装になる。
+          payload.support = await probeOrientationSupport();
+
+          const blob = new Blob([orientProbeBytes()], { type: 'image/jpeg' });
+          // 生の寸法は別に取る（報告のため）。**close() の前に読む** ──
+          // 閉じた ImageBitmap は width/height が 0 になり、あとで比較すると
+          // 「一致しない」と嘘の値が出る（この行はハーネスの自己検査で実際に捕まえた）。
+          const a = await createImageBitmap(blob);
+          const aDim = { width: a.width, height: a.height };
+          a.close?.();
+          payload.decoded = aDim;
+          payload.decideSaysSame = decideOrientationSupport(aDim) === payload.support;
+
+          // `imageOrientation: 'none'` が既定と 1 ビットも変わらないか（§4.12 の 2 つ目の質問）
+          try {
+            const b = await createImageBitmap(blob, { imageOrientation: 'none' });
+            const bDim = { width: b.width, height: b.height };
+            b.close?.();
+            payload.none = bDim;
+            payload.noneMatchesDefault =
+              bDim.width === aDim.width && bDim.height === aDim.height;
+          } catch (e) {
+            payload.none = 'threw: ' + String(e && e.name);
+          }
+        } catch (e) {
+          payload.support = 'unknown';
+          payload.error = String((e && e.name) || e);
+        }
+        await report(payload);
+      })();
+    </script>
+  </body>
+</html>

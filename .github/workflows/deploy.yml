@@ -45,9 +45,54 @@ jobs:
       # PR で走らせる価値がある: §7.1 の `reconstructMean` も §7.7 の `fillRatios` も、
       # これが在れば発見が何フェーズも早かった。
       - run: npm run teeth
+      # 忠実性ラダーの **構造回帰だけ**（Phase 2a で足した）。
+      #
+      # ## なぜ `--structural` なのか —— CI に ΔE00 を置くと「緑だが中身が無い」になる
+      #
+      # runner に GPU は無いので、ここで走るのは **SwiftShader** である。実測（同じページ・
+      # 同じ手順）で `dimLevel = 0` の峰は SwiftShader **133** / ANGLE Metal **129**、
+      # ΔE00 にして 3.18 と 4.70 ── **予算 3.5 を置けばソフトウェア経路は緑で、
+      # 出荷経路は赤**という状態が作れてしまう。だから ΔE00 の判定はローカルの実 GPU で行い、
+      # CI が見るのは**ラスタライザに依らない行**だけにする:
+      # 起動・読み戻しの自己検査・HDR 自己検査・コンソールエラー 0・
+      # そして **CPU で決まるアンカーの `Object.is` 一致**。
+      #
+      # ローカルで SwiftShader を強制して先に確かめてある（`--use-angle=swiftshader`）──
+      # 痕跡は 5 つとも ok、アンカーは厳密一致、コンソールエラー 0。
+      # **憶測で足していない。**
+      #
+      # そして `glInfo()` の UNMASKED_RENDERER がログに出るので、
+      # **この実行自身が「CI が何で描いているか」を答える**。
+      - run: npm run ladder -- --structural
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
+
+  # Gecko（Firefox）の EXIF 向き判定を 1 回測る（Phase 2a で足した）。
+  #
+  # SPEC §4.12 の最後の空欄がこれで、1c は「**測れないのではなく入れていない**。
+  # A に上げる手段は probe を 1 回開くことだけ」と書いた。ローカルへ Firefox は入れない
+  # 方針なので、**runner イメージに入っている実物**（ubuntu-24.04 の Mozilla Firefox）で開く。
+  #
+  # **build とは別ジョブにする。** これは品質ゲートではなく**測定**であって、
+  # 落ちたときに意味するのは「LENS が壊れた」ではなく「測れなかった」である。
+  # 混ぜると、測定の失敗がデプロイを止めるか、ゲートの失敗が測定として読まれる。
+  #
+  # 終了コードの規約:
+  #   0 = `applied` または `not-applied`（**どちらも測定の成功**）
+  #   1 = `unknown`（probe が壊れているか Firefox が動いていない ＝ 測れていない）
+  # `not-applied` が返ったら設計判断が要る ── それはスクリプトではなく人が決める（§4.12）。
+  gecko:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: firefox --version
+      - run: npm run gecko
 
   # デプロイは main への push のときだけ。PR ではゲートまでで止める。
   deploy:
