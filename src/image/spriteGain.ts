@@ -177,7 +177,8 @@ export function axisCoverage(delta: number, n: number, spritePx: number): number
   return acc / SAMPLES;
 }
 
-/** `axisCoverage` の「無限に伸びた格子」版。`gainFor` が較正された基準構成 */
+
+/** `axisCoverage` の「無限に伸びた格子」版。`refNx`/`refNy` を渡さないときの既定 */
 const AXIS_UNBOUNDED = 1 << 24;
 
 export interface CollapseConfig {
@@ -189,9 +190,21 @@ export interface CollapseConfig {
   readonly extentX: number;
   /** 同 y（`clamp01(dimLevel − 1)`） */
   readonly extentY: number;
-  /** その軸に実際に存在する点数 */
+  /** その軸に**実際に存在する**点数（潰したあと） */
   readonly nx: number;
   readonly ny: number;
+  /**
+   * **基準（潰していない）格子の点数**（Phase 2a で足した）。
+   *
+   * 省略すると「無限に伸びた格子」を基準にする ── 元はそれしか無かった。
+   * ところがそれだと `extentX = extentY = 1` でも分子と分母が**別の引数**で
+   * `axisCoverage` を呼ぶので、「同じ引数で同じ関数だから `x/x`」という
+   * 構造的な保証が**成り立っていなかった**（下記）。
+   * 格子経路では `refNx = nx`・`refNy = ny` を渡すこと ── そうすると
+   * アンカーでの厳密 1 が**どのティアでも**構造で守られる。
+   */
+  readonly refNx?: number;
+  readonly refNy?: number;
   /** `gl_PointSize`（device px） */
   readonly spritePx: number;
 }
@@ -227,9 +240,33 @@ export interface CollapseConfig {
  * | 列平均線 `d = 0` | **0.0058472** | 全列の和 → 全体平均 |
  */
 export function collapseWeight(c: CollapseConfig): number {
+  /**
+   * **`extentX = extentY = 1` での厳密 1 は、引数が文字どおり同じときにしか成り立たない**
+   * （Phase 2a で訂正）。
+   *
+   * 元は基準に常に `AXIS_UNBOUNDED`（`1 << 24`）を渡していた。すると `extent = 1` でも
+   * 分子と分母は `n` の違う呼び出しになり、`axisCoverage` の中の
+   * `half = (n − 1)/2` と `x = t − (i − half)·delta` の丸めが変わる。
+   *
+   * 実測（**CI が ubuntu の runner で BALANCED ティアに落ちて初めて出た**）:
+   *
+   * | ティア | 格子 | `A(unbounded)` | `A(n)` | `sampleWeight` |
+   * |---|---|---|---|---|
+   * | HIGH | 378×236 | 1.487465316005411 | 1.487465316005411 | **1**（厳密）|
+   * | BALANCED | 251×157 | 1.4874653160054105 | 1.4874653160054**108** | **0.9999999999999996** |
+   *
+   * **HIGH で厳密 1 だったのは数値の偶然**で、構造ではなかった。
+   * `collapse.test.ts` の `Object.is(…, 1)` が緑だったのは、この機体のティアが
+   * HIGH だったからにすぎない ── **機体依存のテスト**である。
+   *
+   * → 呼び出し側が基準の点数を渡せるようにした。格子経路は `refNx = nx`・`refNy = ny` を
+   * 渡すので、`extent = 1` では分子と分母が**文字どおり同じ引数**になり
+   * （`1 * s0x === s0x` は厳密）、`x/x` がどのティアでも 1 になる。
+   * 無限格子との差は最終 ulp だけである（スプライトは ±2 セルしか届かない）。
+   */
   const ref =
-    axisCoverage(c.s0x, AXIS_UNBOUNDED, c.spritePx)
-    * axisCoverage(c.s0y, AXIS_UNBOUNDED, c.spritePx);
+    axisCoverage(c.s0x, c.refNx ?? AXIS_UNBOUNDED, c.spritePx)
+    * axisCoverage(c.s0y, c.refNy ?? AXIS_UNBOUNDED, c.spritePx);
   const cur =
     axisCoverage(c.extentX * c.s0x, c.nx, c.spritePx)
     * axisCoverage(c.extentY * c.s0y, c.ny, c.spritePx);

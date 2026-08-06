@@ -14,7 +14,8 @@
     "teeth": "node scripts/teeth.mjs",
     "bench": "vitest bench --run",
     "ladder": "node scripts/ladder.mjs",
-    "ladder:teeth": "node scripts/ladder.mjs --teeth"
+    "ladder:teeth": "node scripts/ladder.mjs --teeth",
+    "gecko": "node scripts/gecko.mjs"
   },
   "dependencies": {
     "three": "0.185.1"

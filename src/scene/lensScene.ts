@@ -467,6 +467,11 @@ export class LensScene {
       extentY: grid ? this.extent[1] : 0,
       nx: grid ? this.source.grid.cols : this.linePoints,
       ny: grid ? this.source.grid.rows : 1,
+      // **基準は「潰していないこの格子」**（Phase 2a）。無限格子を基準にしていたころは、
+      // `extent = 1` でも分子と分母が別の引数になり、アンカーの厳密 1 が
+      // ティアによって崩れた（BALANCED で 0.9999999999999996）。
+      refNx: this.source.grid.cols,
+      refNy: this.source.grid.rows,
       spritePx: cfg.spritePx,
     };
     const sampleWeight = collapseWeight(collapse);

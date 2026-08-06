@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  collapseWeight,
   F,
   K_SPRITE,
   centreFragmentOffset,
@@ -173,5 +174,63 @@ describe('定数の同一性', () => {
   it('位相の式が使う F は、シェーダと同じ 1 つの定数である', () => {
     expect(F).toBe(21);
     expect(K_SPRITE).toBe(3.85);
+  });
+});
+
+describe('アンカーの厳密 1 は、ティアに依らず構造で守られる（Phase 2a）', () => {
+  /**
+   * **これは CI が ubuntu の runner で BALANCED ティアに落ちて初めて出た。**
+   *
+   * §2.3 は「`extentX = extentY = 1` のとき分子と分母は**同じ引数で同じ関数**を呼ぶので
+   * `x/x` すなわち厳密に 1」と書いていたが、基準に `AXIS_UNBOUNDED` を渡していたので
+   * **同じ引数ではなかった**。HIGH（378×236）で厳密 1 だったのは数値の偶然で、
+   * BALANCED（251×157）では **0.9999999999999996** になる。
+   *
+   * `collapse.test.ts` の `Object.is(…, 1)` はこの機体のティアでしか緑にならない
+   * **機体依存のテスト**だった ── だから両ティアで見る。
+   */
+  const TIERS: [string, number, number, number][] = [
+    ['HIGH', 378, 236, 2.247830687830687],
+    ['BALANCED', 251, 157, 3.3851792828685254],
+    ['ULTRA 相当', 489, 326, 1.7376],
+  ];
+
+  it('基準の点数を渡せば、どのティアでも `Object.is(…, 1)`', () => {
+    // **セルの縦横比も振る。** 最初 `s0y = s0 * 1.001` だけで書いて、
+    // `npm run teeth` に「壊しても緑」と言われた ── その比では BALANCED でも
+    // たまたま厳密 1 になり、**まさに直したはずの偶然の上でテストしていた**。
+    for (const [, cols, rows, s0] of TIERS) {
+      for (const ratio of [1, 1.001, 0.999, 1.0017]) {
+        const w = collapseWeight({
+          s0x: s0, s0y: s0 * ratio, extentX: 1, extentY: 1,
+          nx: cols, ny: rows, refNx: cols, refNy: rows, spritePx: K_SPRITE * s0,
+        });
+        expect(Object.is(w, 1)).toBe(true);
+      }
+    }
+  });
+
+  it('基準を省く（＝無限格子）と、ティアによって厳密 1 が崩れる —— これが元の姿', () => {
+    // CI（ubuntu-24.04 / BALANCED）が出したのと同じ構成
+    const [, cols, rows, s0] = TIERS[1];
+    const w = collapseWeight({
+      s0x: s0, s0y: s0, extentX: 1, extentY: 1,
+      nx: cols, ny: rows, spritePx: K_SPRITE * s0,
+    });
+    expect(w).toBe(0.9999999999999996);
+    // **1 に「近い」だけで、厳密ではない。** 絵は 1 ビットも動かないが、
+    // 「構造で守られる」という主張のほうが偽だった
+    expect(Object.is(w, 1)).toBe(false);
+    expect(w).toBeCloseTo(1, 12);
+  });
+
+  it('潰した構成では基準を渡しても 1 にならない（補正が生きている）', () => {
+    const [, cols, rows, s0] = TIERS[0];
+    const line = collapseWeight({
+      s0x: s0, s0y: s0, extentX: 1, extentY: 0,
+      nx: cols, ny: 1, refNx: cols, refNy: rows, spritePx: K_SPRITE * s0,
+    });
+    expect(line).toBeGreaterThan(1.4);
+    expect(line).toBeLessThan(1.6);
   });
 });

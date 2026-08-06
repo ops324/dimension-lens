@@ -50,14 +50,20 @@
  * → `--structural` では**構造回帰だけ**を見る（起動・自己検査・コンソール 0・
  * CPU で決まるアンカーの厳密一致）。ΔE00 の判定はローカルの実 GPU でのみ行う。
  *
- * **ただし Phase 2a では CI にまだ載せていない（水準 C）。**
- * `channel: 'chrome'` が GitHub の runner に在るかを、ここから確かめる手段が無い ──
- * 確かめずに `deploy.yml` へ足せば、それは §0.1 の規律 2 を破ることになる。
+ * **`--structural` は CI に載せた。** 阻んでいた不確定要素は事実で消えている ──
+ * runner イメージ（ubuntu-24.04）に Google Chrome 150.0.7871.128 が在る（`gh api` で確認）。
+ * ローカルで SwiftShader を強制して先に確かめてもある（`--use-angle=swiftshader` で
+ * 痕跡 5 つとも ok・アンカー厳密一致・コンソール 0）。
+ *
+ * **そして CI の初回実行が、こちらの想定を 1 つ壊した** ── runner は 4 コアなので
+ * `bootTier()` が **BALANCED** を返し、格子が 251×157 になる。
+ * 「アンカーは CPU で決まるからラスタライザに依らない」は真だが、
+ * **機体に依らないとは言っていなかった**。→ ティアが違う行は `➖`（採点しない）。
  *
  * 使い方:
  *   npm run ladder                   フル（実 GPU・予算判定あり）
  *   npm run ladder -- --teeth        **ラダー自身の歯**（故障を注入して赤くなるか）
- *   npm run ladder -- --structural   構造回帰のみ（CI 用・未搭載）
+ *   npm run ladder -- --structural   構造回帰のみ（CI に載っている）
  *   npm run ladder -- --json         JSON も出す
  */
 
@@ -77,6 +83,20 @@ const MEASURE_BUFFER = { width: 988, height: 778 };
  * ブラウザから読んだ値を自分自身と比べても何も分からない（§7.7 の `fillRatios` の教訓）。
  */
 const ANCHORS = {
+  /**
+   * **この表は HIGH ティアの表である**（Phase 2a で判明）。
+   *
+   * `bootTier()` は `hardwareConcurrency` / `deviceMemory` / DPR を読むので、
+   * **ティアは機体で変わる** ── GitHub の runner（4 コア）は **BALANCED** で起動し、
+   * 格子は 251×157、`s0` は 3.3851792828685254 になる。
+   * 「アンカーは CPU で決まるからラスタライザに依らない」は真だが、
+   * **機体に依らないとは言っていなかった**。1 機体でしか測っていなかったので気づかなかった。
+   *
+   * → ティアが違うときは**採点しない**（`null`）。緑にも赤にもせず、
+   * 「採点しなかった」と出す ── 飛ばした行を通過と読ませない。
+   * どのティアでも採点できるようにするには `__LENS__` にティアを固定する口が要る（Phase 2c）。
+   */
+  tier: 'HIGH',
   s0: 2.247830687830687,
   gain: 0.4530724335144705,
   cameraDistance: 1.9635938049105979,
@@ -124,9 +144,10 @@ const TEETH = args.includes('--teeth');
 let rows = [];
 let failures = 0;
 
+/** `ok === null` は「採点しない」。**通過にも失敗にも数えない** */
 function record(id, what, budget, measured, ok, note = '') {
   rows.push({ id, what, budget, measured, ok, note });
-  if (!ok) failures++;
+  if (ok === false) failures++;
 }
 
 function startDev() {
@@ -218,16 +239,27 @@ async function runOnce(page, context, fault, consoleErrors) {
     return {
       s0: s.s0, gain: s.gain, cameraDistance: s.cameraDistance, cascadeDist: s.cascadeDist,
       gridW: s.gridW, gridH: s.gridH, fillX: s.fill.x, meanHex: st.meanHex,
-      sampleWeight: s.sampleWeight,
+      sampleWeight: s.sampleWeight, tier: st.tier,
     };
   });
-  for (const k of ['s0', 'gain', 'cameraDistance', 'cascadeDist', 'gridW', 'gridH', 'fillX']) {
-    record('ENV', `アンカー ${k}`, String(ANCHORS[k]), String(anchors[k]),
+  // ティアに依らない行と、格子（＝ティア）で決まる行を分ける
+  const tierMatch = anchors.tier === ANCHORS.tier;
+  record('ENV', 'ティア', `${ANCHORS.tier}（アンカー表のティア）`,
+    `${anchors.tier}（格子 ${anchors.gridW}×${anchors.gridH}）`, tierMatch ? true : null,
+    tierMatch ? '' : 'ティアが違うので、格子に依存する行は採点しない');
+  for (const k of ['cameraDistance', 'fillX']) {
+    record('ENV', `アンカー ${k}（ティアに依らない）`, String(ANCHORS[k]), String(anchors[k]),
       Object.is(anchors[k], ANCHORS[k]), 'Object.is');
+  }
+  for (const k of ['s0', 'gain', 'cascadeDist', 'gridW', 'gridH']) {
+    record('ENV', `アンカー ${k}（ティア依存）`, String(ANCHORS[k]), String(anchors[k]),
+      tierMatch ? Object.is(anchors[k], ANCHORS[k]) : null, tierMatch ? 'Object.is' : '');
   }
   record('ENV', 'アンカー meanHex', ANCHORS.meanHex, anchors.meanHex,
     anchors.meanHex === ANCHORS.meanHex);
-  record('G7', 'sampleWeight (d=2)', '厳密に 1', String(anchors.sampleWeight),
+  // **ティアに依らず厳密 1 でなければならない**（Phase 2a で構造にした）。
+  // CI が BALANCED で 0.9999999999999996 を出したのが、この行が在る理由である。
+  record('G7', 'sampleWeight (d=2)', '厳密に 1（全ティア）', String(anchors.sampleWeight),
     Object.is(anchors.sampleWeight, 1), 'Object.is');
 
   if (!STRUCTURAL) {
@@ -829,10 +861,14 @@ function report(gl, buffer) {
   console.log('  ' + '-'.repeat(118));
   for (const r of rows) {
     console.log(line(r.id, r.what, String(r.budget),
-      `${r.measured}${r.note ? `  [${r.note}]` : ''}`, r.ok ? '  ✅' : '  ❌'));
+      `${r.measured}${r.note ? `  [${r.note}]` : ''}`,
+      r.ok === null ? '  ➖' : r.ok ? '  ✅' : '  ❌'));
   }
+  const skipped = rows.filter((r) => r.ok === null).length;
   console.log('');
-  console.log(`  ${rows.length} 行 / 通過 ${rows.length - failures} / 失敗 ${failures}`);
+  console.log(`  ${rows.length} 行 / 通過 ${rows.length - failures - skipped} / 失敗 ${failures}`
+    + (skipped ? ` / **採点しない ${skipped}**` : ''));
+  if (skipped > 0) console.log('  （➖ は飛ばした行。**通過ではない**）');
   if (AS_JSON) {
     console.log('\nJSON\n' + JSON.stringify({ gl, buffer, rows, raw: ladderRaw, zeroPhase: zeroPhaseRaw }, null, 2));
   }
