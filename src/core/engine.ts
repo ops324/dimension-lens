@@ -18,10 +18,13 @@
 //     canvas が古い寸法のまま「自己整合した嘘の値」を返す（1b で踏んだ）。
 //     ペイン既定（buffer 1778×1718）では s0 が 4.045 になり、§7.7 のアンカー
 //     2.2478 と一致しない ── アンカーの再実行には寸法の固定が要る
+//   - **Phase 2a**: `hdrCapture` と `renderForHdrCapture()` を追加。
+//     8bit の `capture` は 1.0 超と 1.0 ちょうどを区別できないので、`OutputPass` の前で
+//     リニアのまま写しを取る口を並べた。**測る道具を、測る対象より先に置く**（SPEC §7.2）
 
 import * as THREE from 'three';
 import { buildPostFX, type PostFX } from '../render/postfx';
-import { Capture } from './capture';
+import { Capture, HdrCapture } from './capture';
 
 export type FrameCallback = (dt: number, t: number) => void;
 export type ResizeCallback = (width: number, height: number, pixelRatio: number) => void;
@@ -64,6 +67,8 @@ export class Engine {
   readonly camera: THREE.PerspectiveCamera;
   readonly postfx: PostFX;
   readonly capture: Capture;
+  /** リニア HDR の読み戻し口（Phase 2）。`OutputPass` の前に挿さる */
+  readonly hdrCapture: HdrCapture;
 
   private readonly frameCallbacks: FrameCallback[] = [];
   private readonly resizeCallbacks: ResizeCallback[] = [];
@@ -115,10 +120,12 @@ export class Engine {
 
     this.renderer.getDrawingBufferSize(this.bufferSize);
     this.capture = new Capture(this.bufferSize.x, this.bufferSize.y);
+    this.hdrCapture = new HdrCapture(this.bufferSize.x, this.bufferSize.y);
 
     this.postfx = buildPostFX(this.renderer, this.scene, this.camera, {
       samples: Math.min(BOOT_SAMPLES, this.renderer.capabilities.maxSamples),
       capturePass: this.capture.pass,
+      hdrPass: this.hdrCapture.pass,
     });
 
     canvas.addEventListener('webglcontextlost', this.handleContextLost, false);
@@ -236,6 +243,16 @@ export class Engine {
     this.capture.frameInto(() => this.renderOnce(1));
   }
 
+  /** HDR パスを立てて 1 フレーム描き、リニアのまま読み戻せる状態にする（Phase 2） */
+  renderForHdrCapture(steps = 1): void {
+    this.hdrCapture.setSize(
+      this.renderer.getDrawingBufferSize(this.bufferSize).x,
+      this.bufferSize.y,
+    );
+    if (steps > 1) this.renderOnce(steps - 1);
+    this.hdrCapture.frameInto(() => this.renderOnce(1));
+  }
+
   private readonly tick = (now: number): void => {
     this.rafId = requestAnimationFrame(this.tick);
     const dt = Math.min((now - this.prevTime) / 1000, MAX_DELTA);
@@ -272,6 +289,7 @@ export class Engine {
     this.postfx.setSize(width, height, pixelRatio);
     this.renderer.getDrawingBufferSize(this.bufferSize);
     this.capture.setSize(this.bufferSize.x, this.bufferSize.y);
+    this.hdrCapture.setSize(this.bufferSize.x, this.bufferSize.y);
 
     for (let i = 0; i < this.resizeCallbacks.length; i++) {
       this.resizeCallbacks[i](width, height, pixelRatio);

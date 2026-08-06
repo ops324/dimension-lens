@@ -7,6 +7,10 @@
 //   - bloom / grade を**既定オフ**にした。1a-iii の忠実性ラダーは後処理ゼロが基準で、
 //     定数の再測定は Phase 2（SPEC §8 のフェーズ表）
 //   - 親の bloom/grade 定数はそのまま残す（Phase 2 の出発点。勝手に「改善」しない）
+//   - **Phase 2a: `hdrPass` を受け取れるようにした**（`OutputPass` の**前**に挿す）。
+//     鎖の最後の 8bit capture では 1.0 超と 1.0 ちょうどが区別できず、
+//     `CompressPass` が管理する量を測る口がどこにも無かった（`core/capture.ts` の `HdrCapture`）。
+//     bloom / grade / compress の定数そのものは 2a では**まだ触っていない**
 
 /**
  * ポストプロセスの鎖。
@@ -48,6 +52,12 @@ export interface PostFXOptions {
   samples?: number;
   /** 鎖の最後に挿す読み戻しパス（`src/core/capture.ts`） */
   capturePass?: Pass;
+  /**
+   * **`OutputPass` の前**に挿す HDR 読み戻しパス（Phase 2・`core/capture.ts` の `HdrCapture`）。
+   * ここでしか「1.0 を超えた値」を観測できない ── 後ろで見ると sRGB エンコード済みで、
+   * 8bit の capture はさらにクリップする。
+   */
+  hdrPass?: Pass;
 }
 
 export interface PostFX {
@@ -239,6 +249,7 @@ export function buildPostFX(
   composer.addPass(renderPass);
   composer.addPass(bloomPass);
   composer.addPass(compressPass);
+  if (opts.hdrPass) composer.addPass(opts.hdrPass);
   composer.addPass(outputPass);
   composer.addPass(gradePass);
   if (opts.capturePass) composer.addPass(opts.capturePass);

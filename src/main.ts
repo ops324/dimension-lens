@@ -154,6 +154,16 @@ async function boot(): Promise<void> {
         + `（読めた値 ${JSON.stringify(selfTest.actual)}, glError ${selfTest.glError}）`,
     );
   }
+  // HDR 側も同じ規律で検査する（Phase 2）。**1.0 を超える値を置く** ──
+  // この口の存在理由が「1.0 超を区別すること」なので、1.0 以下だけで通しても意味がない。
+  const hdrSelfTest = engine.hdrCapture.selfTest(engine.renderer);
+  document.documentElement.dataset.lensCaptureHdr = hdrSelfTest.ok ? 'ok' : 'broken';
+  if (!hdrSelfTest.ok) {
+    console.error(
+      `[LENS] HDR 読み戻しの自己検査に失敗: ${hdrSelfTest.message}`
+        + `（読めた値 ${JSON.stringify(hdrSelfTest.actual)}, glError ${hdrSelfTest.glError}）`,
+    );
+  }
 
   // ---- 4. シーン ----
   scene = new LensScene(sourceFrom(payload!));
@@ -241,6 +251,34 @@ installDevHook({
       throw new Error(`readback が GL エラー ${glError} を返しました。値は信用できません。`);
     }
     return pixels;
+  },
+  readbackHDR: async (x: number, y: number, w: number, h: number): Promise<Float32Array> => {
+    if (!engine) throw new Error('engine がまだ起動していません。');
+    engine.renderForHdrCapture(1);
+    const { pixels, glError } = engine.hdrCapture.read(engine.renderer, x, y, w, h);
+    if (glError !== 0) {
+      throw new Error(`readbackHDR が GL エラー ${glError} を返しました。値は信用できません。`);
+    }
+    return pixels;
+  },
+  glInfo: () => {
+    if (!engine) throw new Error('engine がまだ起動していません。');
+    const gl = engine.renderer.getContext();
+    // **UNMASKED を取る。** マスクされた RENDERER は "WebGL" のような無情報の文字列で、
+    // ソフトウェア経路と GPU 経路を区別できない ── 監査が同じページで
+    // SwiftShader と ANGLE Metal の 2 通りの数値を出したときも、どこにも出ていなかった。
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const str = (v: unknown): string => (typeof v === 'string' ? v : '(unavailable)');
+    return {
+      renderer: dbg
+        ? str(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
+        : str(gl.getParameter(gl.RENDERER)),
+      vendor: dbg
+        ? str(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL))
+        : str(gl.getParameter(gl.VENDOR)),
+      version: str(gl.getParameter(gl.VERSION)),
+      maxSamples: engine.renderer.capabilities.maxSamples,
+    };
   },
   stats,
 });

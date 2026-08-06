@@ -58,6 +58,52 @@ export function lineCountFor(cols: number): number {
   return Math.min(Math.floor(cols), LINE_MAX_POINTS);
 }
 
+/**
+ * その `extentX` で**実際に描く**点数（Phase 2 で足した）。
+ *
+ * ## なぜ点数を減らすのか —— 深度ではなく「項のばらつき」が効いていた（実測）
+ *
+ * 1b は「加算深度を 512 以下に抑えることが構造的な要件」（§4.6）としてこの上限を決めたが、
+ * **その予算表は加算項がすべて等しい場合の実測**だった。Phase 2 で測り直した:
+ *
+ * | 入力（同一幾何・深度 378） | 位相を除いた残差 |
+ * |---|---|
+ * | 一様グレー（項がすべて等しい） | **≈ 0%** |
+ * | 標本 No.0 | **−5.2%** |
+ * | 左 199 / 右 30 | **−6.0%** |
+ * | 左 30 / 右 199（**同じ画素集合の鏡像**） | −4.5% |
+ *
+ * 鏡像で 1 コード動く ── **加算の順序に依存する**。暗い列の 1 点あたりの寄与は
+ * 3.0e−5 で、half-float の最小正規数 6.104e−5 を**下回る**。明るい列を積んだあとの
+ * アキュムレータに対しては ulp/2 より小さく、**丸め戻されて消える**。
+ * つまり深度そのものではなく「大きい項の後ろに小さい項が並ぶこと」が損失を生む。
+ *
+ * → **潰れた軸の点を、潰れた比率どおり CPU 側で先に畳む。**
+ * `extentX` が縮むと点の間隔も縮む（同じ画素へ何点も落ちる）ので、
+ * **画面上の間隔が `s0x` を保つ点数**まで減らす:
+ *
+ * ```
+ * 画面間隔 = extentX · s0x · lineCount / n   を  s0x  に等しくしたい
+ * ⟹ n = extentX · lineCount
+ * ```
+ *
+ * `extentX = 1` では `n = lineCount` に厳密に戻るので、**`dimLevel = 1` の絵は
+ * 1 ビットも動かない**（G8a の値がそのまま生きる）。`extentX = 0` では 1 点になり、
+ * 加算そのものが消える ── `dimLevel = 0` は SPEC §2 の定義どおり
+ * 「平均色の**一点**」であって、378 点を重ねて平均を作る必要はどこにも無かった。
+ *
+ * 畳み込みは `buildColumnLine` を `count = n` で呼び直すだけで済む ──
+ * 源は正準バッファの `columnMeans` のままで、§4.7 の「縮約は正準バッファから」を保つ。
+ * 格子側（`dimLevel > 1`）はこの関数を通らない。
+ */
+export function effectiveLineCount(extentX: number, lineCount: number): number {
+  const max = Math.max(1, Math.floor(lineCount));
+  if (!Number.isFinite(extentX) || extentX >= 1) return max;
+  if (!(extentX > 0)) return 1;
+  const n = Math.round(extentX * max);
+  return n < 1 ? 1 : n > max ? max : n;
+}
+
 export interface ColumnLineBuffers {
   /** 5 f32/点: [u, 0, L', a', b'] */
   readonly base: Float32Array;
