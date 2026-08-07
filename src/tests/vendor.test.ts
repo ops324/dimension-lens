@@ -78,8 +78,11 @@ const EXPECTED: readonly VendoredFile[] = [
     path: 'src/render/postfx.ts',
     from: 'src/render/postfx.ts',
     // CompressPass を新設 / bloom・grade を既定オフ / capture パスを受ける
+    // Phase 2a: hdrPass を OutputPass の前で受ける
+    // Phase 2b: BLOOM_BASE_THRESHOLD / LUMA_WEIGHTS を export（node の柵のため）、
+    //           uKnee を core/compress.ts から取る、reduceMotion を設定可能にする
     status: 'MODIFIED',
-    sha256: '0ceb7a3169383af0',
+    sha256: '7c8b9f31a2cc665b',
   },
   {
     path: 'src/render/colorPointBatch.ts',

@@ -23,7 +23,10 @@ import { degeneracyKind } from './image/stats';
 import { clearEmptyState, showDegenerate, showFailure } from './ui/emptyState';
 import { Engine } from './core/engine';
 import { bootTier, tierFor } from './core/quality';
+import { compressStrengthFor } from './core/compress';
+import { observeReducedMotion } from './core/motion';
 import { LensScene, type LensSceneSource } from './scene/lensScene';
+import { BlendProbe } from './render/blendProbe';
 
 document.documentElement.dataset.lens = 'booted';
 
@@ -34,6 +37,32 @@ let engine: Engine | null = null;
 let scene: LensScene | null = null;
 let payload: IngestPayload | null = null;
 let report: LensIngestReport | null = null;
+/** 加算合成の器具（Phase 2b）。**DEV でしか作らない** ── 作品には要らない */
+let blendProbe: BlendProbe | null = null;
+
+/**
+ * `CompressPass` の**測定用の上書き**（Phase 2b）。`null` が出荷時の配線
+ * （`compressStrengthFor(dimLevel) > 0` で入る）。
+ *
+ * 上書きの口が要る理由: 配線を入れた瞬間、毎フレーム `setCompressEnabled` が
+ * 走るので、測定器が `setCompress(true)` を撃っても**次のフレームで戻される**。
+ * そうなると G6 の「強度 0 で画素まで恒等」は**両方とも圧縮オフの絵を比べる** ──
+ * `x/x` になり、壊れていても緑になる。配線を足すことで既存の歯を抜くところだった。
+ */
+let compressOverride: boolean | null = null;
+
+/**
+ * 光過敏の配慮の**現在値**。判定は `core/motion.ts` が 1 か所で行い、
+ * ここは配る側 ── **回転（`lensScene`）とグレイン（`postfx`）の両方**へ届かないと
+ * 「配慮している」は嘘になる（Phase 2a まで実際に嘘だった）。
+ */
+let reducedMotion = false;
+
+function applyReducedMotion(on: boolean): void {
+  reducedMotion = on;
+  scene?.setReducedMotion(on);
+  engine?.postfx.setReducedMotion(on);
+}
 
 function toReport(p: IngestPayload, mode: 'worker' | 'main'): LensIngestReport {
   return {
@@ -170,7 +199,36 @@ async function boot(): Promise<void> {
   engine.setScene(scene.scene);
   relayout();
   engine.onResize(relayout);
-  engine.onFrame((dt) => scene?.update(dt));
+  engine.onFrame((dt) => {
+    scene?.update(dt);
+    /**
+     * **`CompressPass` の配線**（Phase 2b）。2a まで `setCompressStrength` を
+     * 呼ぶ者はどこにも無く、パスは出荷経路で `enabled = false` のままだった ──
+     * 「1.0 を超えた加算を圧縮する」は**書いてあるだけで動いていなかった**。
+     *
+     * 強度が 0 のときはパスごと外す。シェーダ側にも早期 return は在るが、
+     * **「アンカー窓では圧縮パスが 1 フラグメントも走らない」を観測可能にする**
+     * ほうが強い（`colorPointBatch.setWeight(0)` と同じ規律）。
+     */
+    const strength = compressStrengthFor(scene?.getDimLevel() ?? 2);
+    engine?.postfx.setCompressStrength(strength);
+    engine?.postfx.setCompressEnabled(compressOverride ?? strength > 0);
+  });
+
+  // 光過敏の配慮。**設定は途中で変わる**ので購読する（`core/motion.ts`）
+  observeReducedMotion(applyReducedMotion);
+
+  /**
+   * 加算合成の器具の自己検査（Phase 2b）。**DEV だけ** ── 作品には要らない道具なので
+   * 出荷ビルドには載せない（`installDevHook` と同じ規律）。
+   * `1 + 0.5 + 0.25` はどの中間和も fp16 で厳密なので、**1.75 でなければならない**。
+   */
+  if (import.meta.env.DEV) {
+    blendProbe ??= new BlendProbe();
+    const t = blendProbe.selfTest(engine.renderer);
+    document.documentElement.dataset.lensBlend = t.ok ? 'ok' : 'broken';
+    if (!t.ok) console.error(`[LENS] 加算合成の器具の自己検査に失敗: ${t.message}`);
+  }
 
   // 最初の 1 枚は rAF に依存せず描く（非表示タブでも痕跡が残る）
   engine.renderOnce(1);
@@ -227,10 +285,32 @@ installDevHook({
   },
   setBloom: (on: boolean) => engine?.postfx.setBloomEnabled(on),
   setGrade: (on: boolean) => engine?.postfx.setGradeEnabled(on),
-  setCompress: (on: boolean) => engine?.postfx.setCompressEnabled(on),
+  setCompress: (on: boolean | null) => {
+    compressOverride = on;
+    if (on !== null) engine?.postfx.setCompressEnabled(on);
+    engine?.renderOnce(1);
+  },
   setPath: (mode) => {
     scene?.setPathOverride(mode);
     engine?.renderOnce(1);
+  },
+  setColorField: (mode) => {
+    scene?.setColorField(mode);
+    engine?.renderOnce(1);
+  },
+  setReducedMotion: (on: boolean) => {
+    applyReducedMotion(on);
+    engine?.renderOnce(1);
+  },
+  reducedMotion: () => reducedMotion,
+  /**
+   * 加算合成そのものを測る（Phase 2b）。**作品のシーンを一切通さない** ──
+   * 通した瞬間、残差にスプライトの被覆と較正と位相が乗る（§4.6 訂正 4）。
+   */
+  blendProbe: (values: number[]) => {
+    if (!engine) throw new Error('engine がまだ起動していません。');
+    blendProbe ??= new BlendProbe();
+    return blendProbe.accumulate(engine.renderer, values);
   },
   sceneStats: () => {
     if (!scene) throw new Error('シーンがまだ組まれていません。');

@@ -63,8 +63,15 @@ export interface LensDevHook {
   setBloom(enabled: boolean): void;
   /** GradePass(色収差・ビネット・グレイン)の有効/無効 */
   setGrade(enabled: boolean): void;
-  /** CompressPass(dimLevel 駆動のソフトニー圧縮)の有効/無効 */
-  setCompress(enabled: boolean): void;
+  /**
+   * CompressPass(dimLevel 駆動のソフトニー圧縮)の**測定用の上書き**。
+   *
+   * `null` で出荷時の配線（`compressStrengthFor(dimLevel) > 0` で入る）へ戻す。
+   * **上書きの口が要る理由**: Phase 2b で配線したので、毎フレーム
+   * `setCompressEnabled` が走る ── 測定器が `true` を撃っても次のフレームで戻され、
+   * G6 の「強度 0 で画素まで恒等」が**両方とも圧縮オフの絵の比較**（＝ `x/x`）になる。
+   */
+  setCompress(enabled: boolean | null): void;
   /**
    * 矩形を読み戻す。**必ず rAF コールバック内で readPixels する**こと ──
    * 外から読むとバックバッファが破棄済みで黒が返る(上の 1.)。
@@ -154,6 +161,44 @@ export interface LensDevHook {
     glError: number;
     uv: [number, number];
   } | null;
+  /**
+   * **加算合成そのもの**を、作品を通さずに測る（Phase 2b・`render/blendProbe.ts`）。
+   *
+   * 規定した `values` を**その順序で** 1 個ずつ HDR の RT へ加算し、読み返す。
+   * 光学も幾何も較正も乗らないので、返る値の残差は
+   * **GPU のブレンドユニットの丸めだけ**である ── §4.6 訂正 4 の
+   * 「実測 −5.2% と監査の fp16 シミュレーション 1% 未満が矛盾したまま」を、
+   * `image/blendModel.ts` の 3 モデルのどれと一致するかで切り分ける。
+   */
+  blendProbe(values: number[]): {
+    rgb: [number, number, number];
+    count: number;
+    glError: number;
+  };
+  /**
+   * 点群の**色場だけ**を差し替える（Phase 2b・G12）。**幾何は 1 ビットも動かさない。**
+   *
+   * `d ≥ 3` では点が奥行きへ散り、1 フラグメントに 16〜64 個のスプライトが重なる。
+   * そこに §4.6 の残差機構が残っているかを問いたいが、**素直に画像を差し替えると
+   * `base`（＝ 位置）も変わる**（L 軸が座標だから）。それでは幾何と色の効果が分離できない。
+   *
+   * → 位置バッファを固定したまま、色属性だけを `image` / `mean` / `image+mean` へ
+   * 切り替える。加算が線形なら `I(image+mean) = I(image) + I(mean)` が**厳密に**成り立つ ──
+   * この重ね合わせは**幾何のモデルを 1 つも要求しない**。
+   */
+  setColorField(mode: 'image' | 'mean' | 'image+mean'): void;
+  /**
+   * 光過敏の配慮（`prefers-reduced-motion`）を測定器から on/off する（Phase 2b）。
+   *
+   * Phase 2a までこの配慮は **1 画素も変えていなかった** ── `postfx.ts` が
+   * `gradeTime` を握るだけで、その `gradePass` は出荷時 `enabled = false`、
+   * 回転そのもの（`advancePhases`）は門を通っていなかった。
+   * **未計測ではなく偽の主張**だったので、ラダーが両側から見張る
+   * （オンで画素が動かない／オフで動く）。
+   */
+  setReducedMotion(on: boolean): void;
+  /** いま有効な光過敏の配慮（メディアクエリの実測値か、`setReducedMotion` の上書き） */
+  reducedMotion(): boolean;
 }
 
 /** `LensStats` は Phase 0 で形を決めた分。1a-iii と 1b が増やした分はこちら */
@@ -195,6 +240,12 @@ export interface LensSceneReport {
   cascadeDist: number;
   frozen: boolean;
   pathOverride: 'auto' | 'plate' | 'cloud';
+  /** 測定用の色場（Phase 2b・G12）。出荷時は常に `'image'` */
+  colorField: 'image' | 'mean' | 'image+mean';
+  /** 光過敏の配慮で回転を止めているか（Phase 2b） */
+  reducedMotion: boolean;
+  /** 画像のリニア光の全体平均 */
+  meanColor: [number, number, number];
 }
 
 export interface LensStats {
@@ -254,5 +305,9 @@ export function installDevHook(hook: Partial<LensDevHook>): void {
     setPath: hook.setPath ?? notReady('setPath'),
     sceneStats: hook.sceneStats ?? notReady('sceneStats'),
     sampleTexel: hook.sampleTexel ?? notReady('sampleTexel'),
+    blendProbe: hook.blendProbe ?? notReady('blendProbe'),
+    setColorField: hook.setColorField ?? notReady('setColorField'),
+    setReducedMotion: hook.setReducedMotion ?? notReady('setReducedMotion'),
+    reducedMotion: hook.reducedMotion ?? notReady('reducedMotion'),
   };
 }
