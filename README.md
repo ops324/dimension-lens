@@ -60,16 +60,23 @@ IP アドレスとブラウザの種類 —— を記録します。画像はそ
 
 ```bash
 npm install
-npm run dev        # :5173
-npm run preview    # :4173 — CSP が入るのはこちら。プライバシー検証は必ず preview で
-npm test           # vitest
-npm run bench      # 融合カーネルのマイクロベンチ（ティア表の根拠）
-npm run build      # tsc && vite build
+npm run dev          # :5173
+npm run preview      # :4173 — CSP が入るのはこちら。プライバシー検証は必ず preview で
+npm test             # vitest
+npm run bench        # 融合カーネルのマイクロベンチ（ティア表の根拠）
+npm run build        # tsc && vite build
+npm run teeth        # 歯の確認 —— 台帳の変異を入れて「本当に落ちるか」を試す
+npm run ladder       # 忠実性ラダー（実 GPU・playwright + システムの Chrome）
+npm run ladder:teeth # ラダー自身の歯 —— 絵と採点者を壊して赤くなるか試す
+npm run gecko        # Firefox の EXIF 向き判定を 1 回測る（CI 専用）
 ```
 
 **1フェーズ = 1ブランチ = 1 PR。** `main` へ直接コミットしません。
-マージ前の品質ゲートは4点 —— vitest 全緑 / build 成功 / 実ブラウザ測定の数値を PR に貼る /
+マージ前の品質ゲートは**6点** —— vitest 全緑 / build 成功 / **`npm run teeth` 全噛み** /
+**`npm run ladder` 全行通過（ローカルの実 GPU）** / 実ブラウザ測定の数値を PR に貼る /
 コンソールエラーゼロ。測定が予算を外したらマージしません。
+ラダーの行を足したフェーズでは `npm run ladder:teeth` も必ず走らせます ──
+**測る道具が何も見ていないことは、その道具の出力からは分かりません。**
 
 詳細な設計・罠・到達水準は [SPEC.md](./SPEC.md) にあります。
 特に巻頭の**到達水準表**（A=実測 / B=機構確認 / C=未検証）は、この作品が何を証明できていて
