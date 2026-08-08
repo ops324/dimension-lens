@@ -88,6 +88,26 @@ const MUTATIONS = [
   { phase: '2c', name: 'ニーを 0.9 へ動かす（2b では 11 本すべてが素通しした変異）',
     file: 'src/core/compress.ts',
     find: 'export const COMPRESS_KNEE = 0.8;', replace: 'export const COMPRESS_KNEE = 0.9;' },
+
+  // ---- Phase 2c-ii（フレーミングの位相包絡）----
+  //
+  // 包絡は「絵を良くする」ためではなく「構図を経過時間の関数でなくする」ために在る。
+  // 配線を外しても `framingEnvelope.ts` の単体テストは全部緑のままなので、
+  // **配線そのものを見る歯**が要る（`framingEnvelope.test.ts` の「1800 フレーム」）。
+  { phase: '2c', name: '包絡を配線から外す（構図がまた経過時間の関数へ戻る）',
+    file: 'src/scene/lensScene.ts',
+    find: '    const framed = unionSpread(spread, target);',
+    replace: '    const framed = unionSpread(spread, spread);' },
+  // 門を外すと、板の重み 0.9976 のところでカメラが 2.41 倍跳ぶ ── 写真が突然 41% に縮む
+  { phase: '2c', name: '包絡から門を外す（窓の縁で写真が突然縮む）',
+    file: 'src/scene/lensScene.ts',
+    find: '    const g = cloudW > 1 ? 1 : cloudW;',
+    replace: '    const g = 1;' },
+  // 掃く位相を減らすと包絡が包絡でなくなる（掃いていない位相が外へ出る）
+  { phase: '2c', name: '掃く位相を 4096 → 16 に減らす（包絡が包絡でなくなる）',
+    file: 'src/core/framingEnvelope.ts',
+    find: 'export const ENVELOPE_PHASES = 4096;',
+    replace: 'export const ENVELOPE_PHASES = 16;' },
   { phase: '2b', name: 'fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）',
     file: 'src/image/blendModel.ts',
     find: '  return sign * Math.min(quantize(Math.abs(value), Math.floor), F16_MAX);',
@@ -204,10 +224,14 @@ const MUTATIONS = [
     file: 'src/scene/lensScene.ts',
     find: 'this.axisPresent = axisPresence(source.scales);',
     replace: 'this.axisPresent = [true, true, true, true, true];' },
-  { phase: '1c', name: 'extent の 0 固定を外す', observed: 1,
-    file: 'src/scene/lensScene.ts',
-    find: 'this.extent[k] = this.axisPresent[k] ? clamp01(d - k) : 0;',
-    replace: 'this.extent[k] = clamp01(d - k);' },
+  // **Phase 2c-ii で移した。** `extent` の式は `core/framingEnvelope.ts` の `extentFor` が
+  // 唯一の源になった（包絡が `lensScene` と違う図を測らないため）。台帳もそちらへ移す ──
+  // 移し忘れたまま 2c-ii を走らせたら `npm run teeth` が
+  // 「対象の行が見つからない」で正しく赤くなった（台帳が実装からずれることを、台帳自身が検出した）。
+  { phase: '1c', name: 'extent の 0 固定を外す（退化軸が dimLevel で開く）', observed: 1,
+    file: 'src/core/framingEnvelope.ts',
+    find: '    if (!axisPresent[k]) { out[k] = 0; continue; }',
+    replace: '    if (false) { out[k] = 0; continue; }' },
   { phase: '1c', name: 'HEIF の brand 判定を殺す', observed: 1,
     file: 'src/ingest/format.ts',
     find: "if (b0 === 0x68 && b1 === 0x65) return 'heif';", replace: 'if (false) return null;' },
