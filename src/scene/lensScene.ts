@@ -92,6 +92,21 @@ export const LINE_MAX_DIM = 1;
  */
 export type PathOverride = 'auto' | 'plate' | 'cloud';
 
+/**
+ * 点群の**色場**。**測定のためだけに存在する**（Phase 2b・G12）。
+ *
+ * `d ≥ 3` では点が奥行きへ散り、1 フラグメントに 16〜64 個のスプライトが重なる。
+ * §4.6 の残差機構がそこにも残っているかを問いたいが、**素直に別の画像を入れると
+ * `base`（＝ 位置）も変わる** ── L 軸が座標そのものだからで、それでは
+ * 幾何の違いと色の違いが分離できない。
+ *
+ * → 位置を 1 ビットも動かさずに色属性だけを差し替える。加算が線形なら
+ * `I(image+mean) = I(image) + I(mean)` が**厳密に**成り立つ。この重ね合わせは
+ * **幾何のモデルを 1 つも要求しない** ── 失敗史（`reconstructMean` / `fillRatios`）が
+ * すべて「採点者がモデルを含んでいた」型なので、モデルを含まない構成に価値がある。
+ */
+export type ColorField = 'image' | 'mean' | 'image+mean';
+
 export type BufferKind = 'grid' | 'columnMeans';
 
 export interface LensSceneSource {
@@ -156,6 +171,12 @@ export interface LensSceneStats {
   cascadeDist: number;
   frozen: boolean;
   pathOverride: PathOverride;
+  /** 測定用の色場（Phase 2b）。出荷時は常に `'image'` */
+  colorField: ColorField;
+  /** 光過敏の配慮で回転を止めているか（Phase 2b）。**位相は保持する** */
+  reducedMotion: boolean;
+  /** 画像のリニア光の全体平均（色場 `'mean'` の源）。読み出しの検算にも使える */
+  meanColor: [number, number, number];
 }
 
 interface LayoutParams {
@@ -176,7 +197,22 @@ export class LensScene {
   private dimLevel = 2;
   private lastDimLevel = 2;
   private frozen = false;
+  /**
+   * 光過敏の配慮（`prefers-reduced-motion`）。**`frozen` とは別の状態でなければならない。**
+   *
+   * `freezeRotation` は測定器の口で、測定の前後で必ず戻される。同じフラグを共用すると
+   * **測定が終わった瞬間に配慮が解除される**（そして誰も気づかない）。
+   */
+  private reducedMotion = false;
   private pathOverride: PathOverride = 'auto';
+  private colorField: ColorField = 'image';
+  /** 画像のリニア光の全体平均。`columnMeans` から作る（§4.7 の「縮約は正準バッファから」） */
+  private meanColor: [number, number, number] = [0, 0, 0];
+  /**
+   * 線バッファの**素の色**（色場を差し替える前）。`buildColumnLine` の出力は
+   * `line.colors` へ直接書かれるので、控えを取らないと `'image'` へ戻せない。
+   */
+  private lineColors0 = new Float32Array(0);
   private readonly phases: RotationPhases = createPhases();
   private readonly angles: PlaneRotation[] = createAngleBuffer();
   private readonly matrix = new Float64Array(N * N);
@@ -256,9 +292,18 @@ export class LensScene {
     this.cascadeDist = safeDist(source.maxNorm);
     if (source.plate) this.plate.setImage(source.plate);
 
-    const count = source.grid.cols * source.grid.rows;
-    this.points.colors.set(source.colors.subarray(0, count * 3));
-    this.points.commitColors();
+    // 画像のリニア光の全体平均。**正準バッファの列平均から**作る（格子からではない）
+    const cm = source.columnMeans;
+    const cols = Math.max(1, (cm.length / 3) | 0);
+    let mr = 0;
+    let mg = 0;
+    let mb = 0;
+    for (let x = 0; x < cols; x++) {
+      mr += cm[x * 3];
+      mg += cm[x * 3 + 1];
+      mb += cm[x * 3 + 2];
+    }
+    this.meanColor = [mr / cols, mg / cols, mb / cols];
 
     // 列平均バッファは**正準バッファの列平均**から作る（格子からではない。SPEC §4.7）
     this.lineCount = lineCountFor(source.grid.cols);
@@ -274,7 +319,9 @@ export class LensScene {
     );
     this.lineBase = lineBase;
     this.linePoints = this.lineCount;
-    this.line.commitColors();
+    this.captureLineColors();
+    // 色場を（既定なら素のまま）両バッチへ焼き付ける。commitColors はこの中で撃つ
+    this.applyColorField();
     // 退化は画像ごとに決まる。空間軸(u,v)は常に存在する
     this.axisPresent = axisPresence(source.scales);
     // フレーミングの保持は画像が変われば無効
@@ -300,7 +347,54 @@ export class LensScene {
       n,
       { base: this.lineBase, colors: this.line.colors },
     );
+    this.captureLineColors();
+    this.applyColorField();
+  }
+
+  /** `buildColumnLine` が書いた**素の色**の控えを取る（色場を戻せるようにするため） */
+  private captureLineColors(): void {
+    const n = this.line.colors.length;
+    if (this.lineColors0.length !== n) this.lineColors0 = new Float32Array(n);
+    this.lineColors0.set(this.line.colors);
+  }
+
+  /**
+   * 色場を両バッチへ焼き付ける（Phase 2b）。**位置バッファには触らない。**
+   *
+   * 出荷時は `'image'` なので `source.colors` / `lineColors0` をそのまま写す ──
+   * つまり `setColorField` を一度も呼ばなければ、この経路は**恒等**である。
+   */
+  private applyColorField(): void {
+    const field = this.colorField;
+    const [mr, mg, mb] = this.meanColor;
+    const write = (dst: Float32Array, src: Float32Array, count: number): void => {
+      const n = Math.min(count * 3, dst.length, src.length);
+      if (field === 'image') {
+        dst.set(src.subarray(0, n));
+        return;
+      }
+      for (let i = 0; i < n; i += 3) {
+        const base = field === 'mean' ? 0 : 1;
+        dst[i] = base * src[i] + mr;
+        dst[i + 1] = base * src[i + 1] + mg;
+        dst[i + 2] = base * src[i + 2] + mb;
+      }
+    };
+    write(
+      this.points.colors,
+      this.source.colors,
+      this.source.grid.cols * this.source.grid.rows,
+    );
+    this.points.commitColors();
+    write(this.line.colors, this.lineColors0, this.line.colors.length / 3);
     this.line.commitColors();
+  }
+
+  /** 測定のための色場の差し替え。**幾何は 1 ビットも動かない** */
+  setColorField(mode: ColorField): void {
+    if (mode === this.colorField) return;
+    this.colorField = mode;
+    this.applyColorField();
   }
 
   setDimLevel(d: number): void {
@@ -314,6 +408,29 @@ export class LensScene {
   /** 回転を凍結/解除する。**位相は保持する**（解除で跳ねない） */
   freezeRotation(frozen: boolean): void {
     this.frozen = frozen;
+  }
+
+  /**
+   * 光過敏の配慮（`prefers-reduced-motion: reduce`）。**回転そのものを止める。**
+   *
+   * ## Phase 2a までこの配慮は 1 画素も変えていなかった
+   *
+   * 実装は `postfx.ts` の `setTime` に 1 行あるだけで、握っていたのは
+   * `gradePass` の `uTime`（グレインのアニメーション）だった。ところが
+   * **`gradePass` は出荷時 `enabled = false`** である ── つまり
+   * 「配慮している」は**未計測ではなく偽**だった。自動で動いているのは
+   * `advancePhases` による位相の漂流だけで、そこには門が無かった。
+   *
+   * → ここで止める。`freezeRotation` と**別のフラグ**にしてあるのは、
+   * 測定器が凍結を戻したときに配慮まで戻さないためである。
+   * 位相は保持する（配慮を切った人が見る絵が跳ねない）。
+   */
+  setReducedMotion(on: boolean): void {
+    this.reducedMotion = on;
+  }
+
+  isReducedMotion(): boolean {
+    return this.reducedMotion;
   }
 
   /**
@@ -394,7 +511,8 @@ export class LensScene {
     const d = this.dimLevel;
     const dimChanged = d !== this.lastDimLevel;
     this.lastDimLevel = d;
-    if (!this.frozen) advancePhases(this.phases, d, dt);
+    // **配慮も凍結も、位相を進めないという 1 点で同じ**。理由が違うので状態は分ける
+    if (!this.frozen && !this.reducedMotion) advancePhases(this.phases, d, dt);
 
     // 角度は毎フレーム絶対値で作る（誤差を蓄積させない。rotation.ts の契約）
     const gate = cloudWeight(d);
@@ -603,6 +721,9 @@ export class LensScene {
       cascadeDist: this.cascadeDist,
       frozen: this.frozen,
       pathOverride: this.pathOverride,
+      colorField: this.colorField,
+      reducedMotion: this.reducedMotion,
+      meanColor: [...this.meanColor],
     };
   }
 

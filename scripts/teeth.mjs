@@ -51,6 +51,63 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * ここへ書く。** そうすると次のフェーズが同じ確認を無料で再実行できる。
  */
 const MUTATIONS = [
+  // ---- Phase 2b で足した歯 ----
+  //
+  // **`src/render/postfx.ts` は変異させない。** `vendor.test.ts` が sha256 で丸ごと
+  // 固定しているので、あのファイルの 1 文字を変えれば必ず何かが落ちる ──
+  // つまり「bloom の閾値を守る歯」ではなく「移植ファイルが書き換わったことを検出する歯」に
+  // なってしまう（`x/x` の一種）。だから 2b は定数を `core/bloom.ts` /
+  // `core/compress.ts` へ出し、そちらを壊す。
+  { phase: '2b', name: 'bloom の閾値を d=0 の平均色の下へ下げる（G9 の測定点が bloom の内側へ入る）',
+    file: 'src/core/bloom.ts',
+    find: 'export const BLOOM_BASE_THRESHOLD = 0.28;',
+    replace: 'export const BLOOM_BASE_THRESHOLD = 0.26;' },
+  { phase: '2b', name: '輝度の重みを等分に取り違える（別の量に対する柵になる）',
+    file: 'src/core/bloom.ts',
+    find: 'export const LUMA_WEIGHTS: readonly [number, number, number] = [0.2126, 0.7152, 0.0722];',
+    replace: 'export const LUMA_WEIGHTS: readonly [number, number, number] = [1 / 3, 1 / 3, 1 / 3];' },
+  { phase: '2b', name: 'ニーを平均色の下へ動かす（錨が後処理で動きうる位置へ）',
+    file: 'src/core/compress.ts',
+    find: 'export const COMPRESS_KNEE = 0.8;', replace: 'export const COMPRESS_KNEE = 0.2;' },
+  { phase: '2b', name: '圧縮の強度から門を外す（アンカー窓で圧縮が立ち上がる）',
+    file: 'src/core/compress.ts',
+    find: '  return rotationGate(dimLevel) * COMPRESS_MAX_STRENGTH;',
+    replace: '  return COMPRESS_MAX_STRENGTH;' },
+  { phase: '2b', name: '峰の余裕を外す（実測の包絡ちょうどに合わせて安全率を消す）',
+    file: 'src/core/compress.ts',
+    find: 'export const PEAK_MARGIN = 1.25;', replace: 'export const PEAK_MARGIN = 1.0;' },
+  { phase: '2b', name: 'fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）',
+    file: 'src/image/blendModel.ts',
+    find: '  return sign * Math.min(quantize(Math.abs(value), Math.floor), F16_MAX);',
+    replace: '  return sign * Math.min(quantize(Math.abs(value), Math.round), F16_MAX);' },
+  { phase: '2b', name: '最近接偶数を「常に上へ」にする（ties-to-even を落とす）',
+    file: 'src/image/blendModel.ts',
+    find: '  return floor % 2 === 0 ? floor : floor + 1;',
+    replace: '  return floor + 1;' },
+  { phase: '2b', name: '二値ケースの暗い側を正規数にする（非正規域を問わなくなる）',
+    file: 'src/image/blendModel.ts',
+    find: '  const dark = binaryContribution(30);',
+    replace: '  const dark = binaryContribution(130);' },
+  { phase: '2b', name: '判定の許容を最小の分離幅より広げる（2 モデルが同時に一致する）',
+    file: 'src/image/blendModel.ts',
+    find: '  tolerance = 1e-6,', replace: '  tolerance = 1e-2,' },
+  { phase: '2b', name: '光過敏の配慮が回転へ届かない（2a まで実際にこうだった）',
+    file: 'src/scene/lensScene.ts',
+    find: '    if (!this.frozen && !this.reducedMotion) advancePhases(this.phases, d, dt);',
+    replace: '    if (!this.frozen) advancePhases(this.phases, d, dt);' },
+  { phase: '2b', name: '配慮を測定用の凍結と共用する（測定が終わると配慮が解ける）',
+    file: 'src/scene/lensScene.ts',
+    find: '  setReducedMotion(on: boolean): void {\n    this.reducedMotion = on;\n  }',
+    replace: '  setReducedMotion(on: boolean): void {\n    this.frozen = on;\n  }' },
+  { phase: '2b', name: '色場 `image+mean` を恒等にする（G12 が同じ絵を 2 回測る）',
+    file: 'src/scene/lensScene.ts',
+    find: "        const base = field === 'mean' ? 0 : 1;",
+    replace: "        const base = field === 'mean' ? 0 : 1; if (field !== 'mean') { dst[i] = src[i]; dst[i + 1] = src[i + 1]; dst[i + 2] = src[i + 2]; continue; }" },
+  { phase: '2b', name: '色場の差し替えが位置も触る（幾何固定という前提を壊す）',
+    file: 'src/scene/lensScene.ts',
+    find: '  setColorField(mode: ColorField): void {\n    if (mode === this.colorField) return;',
+    replace: '  setColorField(mode: ColorField): void {\n    this.points.positions[0] += 1e-3;\n    if (mode === this.colorField) return;' },
+
   // ---- Phase 2a で足した歯 ----
   //
   // G9 の −17.58% は 2 つの因子の積だった。**node で採点できるのはその「割り方」**で、

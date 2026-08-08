@@ -11,6 +11,16 @@
 //     鎖の最後の 8bit capture では 1.0 超と 1.0 ちょうどが区別できず、
 //     `CompressPass` が管理する量を測る口がどこにも無かった（`core/capture.ts` の `HdrCapture`）。
 //     bloom / grade / compress の定数そのものは 2a では**まだ触っていない**
+//   - **Phase 2b: 定数を外へ出し、光過敏の配慮を本物にした**
+//     - bloom の定数を **`core/bloom.ts` へ出した**（`bloom.test.ts` が「閾値 > 平均色の輝度」を
+//       node で見張る。閾値は `d = 0` の目標リニア輝度 0.265546 の 1.0544 倍しかない）。
+//       ここに置いたままだと、閾値を壊す変異が `vendor.test.ts` の sha256 にしか
+//       引っかからず、「何を守っている歯か」が言えなくなる
+//     - `uKnee` / `uStrength` の値を `core/compress.ts` から取る（この repo で新しく置かれた
+//       未計測のリテラル `0.8` を、実測に基づく定数へ差し替えた）
+//     - `reduceMotion` を**構築時に 1 回読む定数から、外から設定できる状態へ**変えた。
+//       あの 1 行が握っていたのは既定オフの `gradePass` の `uTime` だけで、
+//       **配慮を有効にしてもフレームバッファは 1 ビットも変わらなかった**（`core/motion.ts`）
 
 /**
  * ポストプロセスの鎖。
@@ -47,6 +57,13 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import type { Pass } from 'three/addons/postprocessing/Pass.js';
+import {
+  BLOOM_BASE_RADIUS,
+  BLOOM_BASE_STRENGTH,
+  BLOOM_BASE_THRESHOLD,
+} from '../core/bloom';
+import { COMPRESS_KNEE } from '../core/compress';
+import { decideReducedMotion, reducedMotionQuery } from '../core/motion';
 
 export interface PostFXOptions {
   samples?: number;
@@ -75,16 +92,29 @@ export interface PostFX {
   setCompressEnabled(on: boolean): void;
   /** `dimLevel` 由来の圧縮強度。0 で厳密な恒等 */
   setCompressStrength(strength: number): void;
-  /** いま有効な後処理パスの名前（DEV フックと PR の証跡用） */
+  /**
+   * 光過敏の配慮（Phase 2b）。ここが握るのは `gradePass` の `uTime` だけで、
+   * **回転そのものは `lensScene` が止める** ── どちらか片方では絵が止まらない。
+   */
+  setReducedMotion(on: boolean): void;
+  /**
+   * いま有効な後処理パスの名前（DEV フックと PR の証跡用）。
+   *
+   * **これを G6 の採点者にしてはいけない**（監査 F.1）。自分が書いたフラグを
+   * 読み返すだけなので、パスが実際に絵へ効いているかを 1 ビットも主張しない ──
+   * `x/x` の典型である。G6 は画素を読んで採点する（`scripts/ladder.mjs`）。
+   */
   enabledPasses(): string[];
 }
 
 const DEFAULT_SAMPLES = 4;
 
-/** 親が Phase 11 で実測して決めた値。**Phase 2 の出発点であって、ここでは触らない** */
-export const BLOOM_BASE_STRENGTH = 0.4;
-export const BLOOM_BASE_RADIUS = 0.25;
-const DEFAULT_BLOOM_THRESHOLD = 0.28;
+/**
+ * bloom の定数は **`core/bloom.ts` が唯一の源**（Phase 2b で出した）。
+ * ここに数字を書き戻すと、`bloom.test.ts` の柵が
+ * 「移植ファイルが書き換わったこと」しか検出しなくなる（`core/bloom.ts` に理由を書いた）。
+ */
+export { BLOOM_BASE_RADIUS, BLOOM_BASE_STRENGTH, BLOOM_BASE_THRESHOLD } from '../core/bloom';
 
 const GRADE_VIGNETTE = 0.18;
 const GRADE_GRAIN = 0.015;
@@ -209,7 +239,7 @@ export function buildPostFX(
     new THREE.Vector2(Math.round(cssWidth * ratio), Math.round(cssHeight * ratio)),
     BLOOM_BASE_STRENGTH,
     BLOOM_BASE_RADIUS,
-    DEFAULT_BLOOM_THRESHOLD,
+    BLOOM_BASE_THRESHOLD,
   );
   bloomPass.enabled = false; // 1a-iii の基準は後処理ゼロ
 
@@ -218,7 +248,8 @@ export function buildPostFX(
     uniforms: {
       tDiffuse: { value: null },
       uStrength: { value: 0 },
-      uKnee: { value: 0.8 },
+      // **`core/compress.ts` が唯一の源。** ここに数字を書くと node から見えなくなる
+      uKnee: { value: COMPRESS_KNEE },
     },
     vertexShader: FULLSCREEN_VERTEX_SHADER,
     fragmentShader: COMPRESS_FRAGMENT_SHADER,
@@ -273,9 +304,15 @@ export function buildPostFX(
 
   setSize(cssWidth, cssHeight, ratio);
 
-  const reduceMotion =
-    typeof window !== 'undefined'
-    && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
+  /**
+   * **既定値をメディアクエリから取るが、定数にはしない**（Phase 2b）。
+   *
+   * 元は構築時の `const` だった。設定は途中で変わりうるうえ、この 1 行が握るのは
+   * 既定オフの `gradePass` だけなので、**「配慮している」という主張が
+   * フレームバッファのどこにも現れなかった**。判定の源は `core/motion.ts` へ移し、
+   * ここは配られた値を持つだけにする。
+   */
+  let reduceMotion = decideReducedMotion(reducedMotionQuery());
 
   return {
     composer,
@@ -309,6 +346,9 @@ export function buildPostFX(
     },
     setCompressStrength(strength: number): void {
       compressStrength.value = strength > 0 ? strength : 0;
+    },
+    setReducedMotion(on: boolean): void {
+      reduceMotion = on;
     },
     enabledPasses(): string[] {
       const names: string[] = ['render'];

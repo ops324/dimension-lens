@@ -134,6 +134,27 @@ const FAULTS = [
   { key: 'wrongdim', name: 'G9 を d=0.5 で測る（別の状態を平均色として採点）', expect: ['G9'] },
   { key: 'flattarget', name: '目標を定数グレー 128 に取り違える', expect: ['G3', 'G4'] },
   { key: 'nocollapse', name: '`setPath` を効かなくする（板を 2 回測って雲と呼ぶ）', expect: ['G2c'] },
+  // ---- Phase 2b で足した故障 ----
+  {
+    key: 'colorfield',
+    name: '色場 `image+mean` を `image` に取り違える（重ね合わせを壊す）',
+    expect: ['G12'],
+  },
+  {
+    key: 'nomotion',
+    name: '光過敏の配慮を効かなくする（2a まで実際にこうだった）',
+    expect: ['G13'],
+  },
+  {
+    key: 'blendorder',
+    name: '加算の順序を逆に積む（順序依存を握り潰す）',
+    expect: ['G14'],
+  },
+  {
+    key: 'nowire',
+    name: '`CompressPass` の配線を外す（2a まで実際にこうだった）',
+    expect: ['G15'],
+  },
 ];
 
 const args = process.argv.slice(2);
@@ -227,6 +248,10 @@ async function runOnce(page, context, fault, consoleErrors) {
     traces.lensCapture === 'ok');
   record('ENV', 'HDR 読み戻しの自己検査', 'ok', traces.lensCaptureHdr ?? '(なし)',
     traces.lensCaptureHdr === 'ok');
+  // Phase 2b: 加算合成の器具（`1 + 0.5 + 0.25 === 1.75` が厳密に返るか）。
+  // これが通らないうちは G14 のどの残差の話も「器具が壊れている」と区別がつかない
+  record('ENV', '加算合成の器具の自己検査', 'ok', traces.lensBlend ?? '(なし)',
+    traces.lensBlend === 'ok');
   record('ENV', '取り込み', 'ok', traces.lensIngest ?? '(なし)', traces.lensIngest === 'ok');
   record('ENV', '描画', 'ok', traces.lensRender ?? '(なし)', traces.lensRender === 'ok');
 
@@ -340,6 +365,9 @@ async function measureInPage(fault) {
   const { srgbToLinear, linearToCode } = await import('/src/color/srgb.ts');
   const { spritePhaseFactor, centreFragmentOffset } = await import('/src/image/spriteGain.ts');
   const { makeSpecimen0, REGIONS, RAMP_CODES } = await import('/src/image/fixture.ts');
+  const { blendCases, classifyBlend, OBSERVED_BLEND_MODEL, BLEND_MODELS } =
+    await import('/src/image/blendModel.ts');
+  const { compressStrengthFor } = await import('/src/core/compress.ts');
   const P = primariesFor('srgb');
   const dE = (a, b) => deltaE2000Linear(P, a, b);
   const lin = (v) => srgbToLinear(v / 255);
@@ -692,6 +720,153 @@ async function measureInPage(fault) {
     await L.ingestBlob(await draw({ rot: 0, flip: false }));
   }
 
+  // ---------- G12: `d ≥ 3` の色（**この帯域を採点する行は 2a まで 1 本も無かった**）
+  //
+  // 格子経路は 1 フラグメントに 16〜64 個のスプライトが重なる。§4.6 の残差機構が
+  // そこにも残っているかを問いたいが、**別の画像を入れると `base`（位置）も変わる**
+  // ── L 軸が座標そのものだからで、それでは幾何と色の効果が分離できない。
+  //
+  // → 位置を 1 ビットも動かさず、色場だけを `image` / `mean` / `image+mean` へ差し替え、
+  // 全面の積分光量が `I(A+B) = I(A) + I(B)` を満たすかを見る。
+  // **幾何のモデルを 1 つも要求しない**（失敗史はすべて「採点者がモデルを含んでいた」型）。
+  //
+  // **この行が見ないもの（書いておく）**: 一様な**乗法的**な欠損は重ね合わせに現れない。
+  // fp16 の切り捨て（G14 が同定した機構）はほぼ乗法的なので、ここはほぼ 0 を出す ──
+  // 捕まえられるのは飽和・非正規数の潰れ・クリップのような**非線形**な機構である。
+  // それらこそ §4.6 が `d = 0` で恐れたものなので、この行の意味はそこにある。
+  {
+    const integrate = async () => {
+      L.renderOnce(3);
+      const p = await L.readbackHDR(0, 0, BUF.w, BUF.h);
+      let s = 0;
+      for (let i = 0; i < p.length; i += 4) s += p[i] + p[i + 1] + p[i + 2];
+      return s;
+    };
+    out.G12 = [];
+    for (const d of fault.quick ? [3] : [3, 4, 5]) {
+      L.setBloom(!!fault.bloom); L.setGrade(!!fault.grade); L.setCompress(false);
+      L.setPath('cloud'); L.setDimLevel(d); L.freezeRotation(true); L.resetRotation();
+      L.setColorField('image');
+      const Ia = await integrate();
+      L.setColorField('mean');
+      const Ib = await integrate();
+      // 故障 `colorfield`: 和の場を作らず片方だけを測る
+      L.setColorField(fault.colorfield ? 'image' : 'image+mean');
+      const Iab = await integrate();
+      L.setColorField('image');
+      const s = L.sceneStats();
+      out.G12.push({
+        d, Ia, Ib, Iab, dev: (Iab - (Ia + Ib)) / Iab,
+        depth: s.additionDepth, points: s.pointCount, extent: [...s.extent],
+      });
+    }
+    L.setPath('auto');
+  }
+
+  // ---------- G13: 光過敏の配慮（**両側から見る**）
+  //
+  // 2a までこの配慮は 1 画素も変えていなかった（`postfx.ts` が既定オフの `gradePass` の
+  // `uTime` を握るだけで、回転そのものには門が無かった）。**未計測ではなく偽**だったので、
+  // 「オンで止まる」だけでなく「**オフで動く**」も要る ──
+  // 前者だけなら「常に止まっている実装」でも緑になる。
+  {
+    const win = [Math.round(BUF.w / 2) - 32, Math.round(BUF.h / 2) - 32, 64, 64];
+    const same = (a, b) => {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
+    const run = async (reduced) => {
+      L.setBloom(false); L.setGrade(false); L.setCompress(false);
+      L.setPath('auto'); L.setDimLevel(3);
+      L.freezeRotation(false); L.resetRotation();
+      // 故障 `nomotion`: 配慮が届かない（2a までの状態）
+      L.setReducedMotion(fault.nomotion ? false : reduced);
+      L.renderOnce(1);
+      const a = await L.readback(...win);
+      L.renderOnce(60);
+      const b = await L.readback(...win);
+      return { applied: L.reducedMotion(), identical: same(a, b) };
+    };
+    const on = await run(true);
+    const off = await run(false);
+    L.setReducedMotion(false); L.freezeRotation(true);
+    out.G13 = { on, off };
+  }
+
+  // ---------- G14: 加算合成の機構（**作品を通さない器具**）
+  //
+  // §4.6 訂正 4 の宿題。監査の fp16 逐次丸めシミュレーション（1% 未満）と
+  // 実測（−5.2% / −6.0%）が矛盾したままだったので、規定した値を GPU の
+  // ブレンドユニットへ直接積んで、どのモデルと一致するかを投票させる。
+  {
+    out.G14 = [];
+    for (const c of blendCases()) {
+      const values = fault.blendorder
+        ? Array.from(c.values).reverse()   // 順序依存を握り潰す故障
+        : Array.from(c.values);
+      const m = L.blendProbe(values);
+      // **判定は宣言された並びに対して行う** ── 故障で並べ替えても採点者は動かさない
+      const v = classifyBlend(c.key, c.values, m.rgb[0]);
+      out.G14.push({
+        key: c.key, count: m.count, glError: m.glError,
+        rgb: m.rgb, channelsEqual: m.rgb[0] === m.rgb[1] && m.rgb[1] === m.rgb[2],
+        predicted: v.predicted, matches: v.matches,
+      });
+    }
+    out.observedModel = OBSERVED_BLEND_MODEL;
+    out.modelKeys = BLEND_MODELS.map((m) => m.key);
+  }
+
+  // ---------- G15: `CompressPass` の配線（**2a まで誰も呼んでいなかった**）
+  //
+  // `setCompressStrength` を呼ぶ者がどこにも無く、出荷経路ではパスが `enabled = false`
+  // のままだった ── 「1.0 を超えた加算を圧縮する」は書いてあるだけで動いていなかった。
+  // 証拠は**画素**で取る（`enabledPasses()` は自分の書いたフラグを読み返すだけなので
+  // 採点者にしない・監査 F.1）。
+  {
+    const diffBytes = (a, b) => {
+      let n = 0;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++;
+      return n;
+    };
+    const frameAt = async (d, wired) => {
+      L.setBloom(false); L.setGrade(false);
+      L.setPath('auto'); L.setDimLevel(d); L.freezeRotation(true); L.resetRotation();
+      // 故障 `nowire`: 出荷時の配線へ戻さない（＝ 常に圧縮オフ）
+      L.setCompress(wired && !fault.nowire ? null : false);
+      L.renderOnce(3);
+      /**
+       * **全面を読む。** 初版は中央 128×128 を読んで「門が開いても絵が変わらない」を得た ──
+       * 圧縮はニー 0.8 の上でしか働かず、図の中央にはその明るさの画素が 1 つも無いためである。
+       * 窓を答えが通るまで動かすのは §7.6 の禁じ手なので、**機構に合う窓（＝ 全面）**にする。
+       */
+      const px8 = await L.readback(0, 0, BUF.w, BUF.h);
+      const hdr = await L.readbackHDR(0, 0, BUF.w, BUF.h);
+      let peak = 0;
+      for (let i = 0; i < hdr.length; i += 4) {
+        if (hdr[i] > peak) peak = hdr[i];
+        if (hdr[i + 1] > peak) peak = hdr[i + 1];
+        if (hdr[i + 2] > peak) peak = hdr[i + 2];
+      }
+      return { px8, peak };
+    };
+    const anchorWired = await frameAt(2, true);
+    const anchorOff = await frameAt(2, false);
+    const openWired = await frameAt(3, true);
+    const openOff = await frameAt(3, false);
+    L.setCompress(false);
+    out.G15 = {
+      anchorDiffBytes: diffBytes(anchorWired.px8, anchorOff.px8),
+      openDiffBytes: diffBytes(openWired.px8, openOff.px8),
+      totalBytes: openWired.px8.length,
+      peakWired: openWired.peak,
+      peakOff: openOff.peak,
+      strengthAtAnchor: compressStrengthFor(2),
+      strengthAtOpen: compressStrengthFor(3),
+    };
+  }
+
   return out;
 }
 
@@ -756,6 +931,76 @@ function score(r, fault) {
   collapseRow('G8b', 'd0.5', 'd=0.5 線', 2.0);
   collapseRow('G9', 'd0', 'd=0 平均色', 3.0);
   record('G10', '加算深度（全 dimLevel）', 'n ≤ 512', String(r.G10.max), r.G10.max <= 512);
+
+  // ---- Phase 2b ----
+  //
+  // **予算 0.5% の根拠。** 機構（G14 が同定した fp16 の 0 方向切り捨て）の最悪値は
+  // 深度 16 で 1 フラグメントあたり `16 · 2⁻¹¹ ≈ 0.78%`、重ね合わせの差はその 2 倍まで
+  // ありうるので上限は 3.1% である。しかしそれは全フラグメントの切り捨てが
+  // 敵対的に揃った場合で、予算に据えると**何も落とせない**。
+  // §4.6 が `d = 0` で見たような**系統的**な機構（−5.2%）はこれよりはるかに大きく出るので、
+  // 0.5% は「落とせるが、丸めでは落ちない」ところに置いてある。
+  for (const g of r.G12 ?? []) {
+    record('G12', `d=${g.d} 積分光量の重ね合わせ（幾何固定・色場だけ差し替え）`, '|ずれ| ≤ 0.5%',
+      `${(g.dev * 100).toFixed(4)}%`, Math.abs(g.dev) <= 0.005,
+      `I(A) ${g.Ia.toExponential(4)} / I(B) ${g.Ib.toExponential(4)}`
+      + ` / I(A+B) ${g.Iab.toExponential(4)} / 深度 ${g.depth} / 点 ${g.points}`
+      + ` / extent ${g.extent.join(',')}`);
+  }
+  if (r.G13) {
+    record('G13', '光過敏の配慮: オンで画素が動かない', '60 フレームで画素一致',
+      String(r.G13.on.identical), r.G13.on.identical && r.G13.on.applied === true,
+      `配慮の適用 ${r.G13.on.applied}`);
+    // **こちら側が本体。** 2a までの実装は「オンで動かない」を満たしていた
+    //（配慮に関係なく、何もしていなかったので）
+    record('G13', '光過敏の配慮: **オフでは動く**', '60 フレームで画素が変わる',
+      String(!r.G13.off.identical), !r.G13.off.identical && r.G13.off.applied === false,
+      '両側を見ないと「常に止まっている実装」でも緑になる');
+  }
+  if (r.G14) {
+    /**
+     * **採点は「投票」である。** 1 ケースで 1 つに絞れることは要求しない ──
+     * `selftest-exact` は 4 モデルとも 1.75 だし、`f16-vs-f32` は 3 モデルが一致する。
+     * **設計上そうなっている**（どのケースがどの組を分けるかは `blendCases()` に書いてある）。
+     *
+     * 各ケースに要求するのは「**観測されたモデルが候補に残っていること**」だけで、
+     * 「1 つに絞れたか」は**全ケースの積集合**に対して 1 行だけ問う。
+     * 初版はケースごとに `matches.length === 1` を要求して 2 行落とした ──
+     * 器具ではなく**採点者が間違っていた**。
+     */
+    for (const g of r.G14) {
+      const ok = g.glError === 0 && g.channelsEqual && g.matches.includes(r.observedModel);
+      record('G14', `加算合成 ${g.key}（K=${g.count}）`,
+        `${r.observedModel} が候補に残る`,
+        g.matches.length ? g.matches.join('+') : '**どのモデルとも一致しない**', ok,
+        `実測 ${g.rgb[0].toPrecision(9)}`
+        + ` / ${r.modelKeys.map((k) => `${k} ${g.predicted[k].toPrecision(6)}`).join(' / ')}`);
+    }
+    // **全ケースを通過したモデルはただ 1 つ**でなければならない（＝ 機構が同定できた）
+    let survivors = r.modelKeys.slice();
+    for (const g of r.G14) survivors = survivors.filter((k) => g.matches.includes(k));
+    record('G14', '**全 6 ケースを通過したモデル**', `${r.observedModel} ただ 1 つ`,
+      survivors.length ? survivors.join('+') : '（無し）',
+      survivors.length === 1 && survivors[0] === r.observedModel,
+      '2 つ以上残るなら入力が機構を分けていない（`x/x`）。0 なら 4 つとも外している');
+    // 器具そのものの健全性（3 チャンネルが独立に同じ答えを出すこと）
+    const chan = r.G14.every((g) => g.channelsEqual);
+    record('G14', '3 チャンネルが同じ値を返す', 'true', String(chan), chan,
+      'チャンネルごとに違う丸めをする実装なら、ここが先に落ちる');
+  }
+  if (r.G15) {
+    record('G15', 'アンカーでは配線が絵を動かさない', `0 / ${r.G15.totalBytes} バイト相違`,
+      `${r.G15.anchorDiffBytes} バイト`, r.G15.anchorDiffBytes === 0,
+      `強度 ${r.G15.strengthAtAnchor}（rotationGate が厳密に 0 を返す）`);
+    record('G15', '**門が開くと配線が絵を動かす**', '> 0 バイト相違',
+      `${r.G15.openDiffBytes} / ${r.G15.totalBytes} バイト`, r.G15.openDiffBytes > 0,
+      `強度 ${r.G15.strengthAtOpen.toFixed(4)} —— これが無い状態が 2a まで続いていた`);
+    record('G15', '配線ありで HDR の峰が 1.0 以下', '≤ 1.0', r.G15.peakWired.toFixed(5),
+      r.G15.peakWired <= 1.0, `配線なしなら ${r.G15.peakOff.toFixed(5)}`);
+    record('G15', '配線なしでは峰が 1.0 を超えている（圧縮する物が実在する）', '> 1.0',
+      r.G15.peakOff.toFixed(5), r.G15.peakOff > 1.0,
+      '超えていないなら、この配線は何も主張していない');
+  }
   if (r.G11) {
     record('G11a', '帯からのはみ出し', '≤ 1.00', r.G11.maxFill.toFixed(4), r.G11.maxFill <= 1.0);
     record('G11b', '近平面の余裕', '≥ 0.25 world', r.G11.minMargin.toFixed(4),
