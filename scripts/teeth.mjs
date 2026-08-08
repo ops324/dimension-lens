@@ -73,9 +73,21 @@ const MUTATIONS = [
     file: 'src/core/compress.ts',
     find: '  return rotationGate(dimLevel) * COMPRESS_MAX_STRENGTH;',
     replace: '  return COMPRESS_MAX_STRENGTH;' },
-  { phase: '2b', name: '峰の余裕を外す（実測の包絡ちょうどに合わせて安全率を消す）',
+  // ---- Phase 2c で差し替えた歯 ----
+  //
+  // 旧: `PEAK_MARGIN = 1.25` を 1.0 にする。定数ごと消えたので置き換える。
+  // 2b の設計（実測の包絡に余裕を掛けて強度を逆算する）は、余裕を何倍にしても
+  // 上限 `knee + 1/s` が 1 を超えるためクリップを消せない ── その設計へ**戻す**変異を
+  // 歯にする。`compress.test.ts` の「1/(1−knee) である」と half-float 全域の 2 本が噛む。
+  { phase: '2c', name: '強度を「設計峰からの逆算」へ戻す（有限の峰では上限が 1 を超える）',
     file: 'src/core/compress.ts',
-    find: 'export const PEAK_MARGIN = 1.25;', replace: 'export const PEAK_MARGIN = 1.0;' },
+    find: 'export const COMPRESS_MAX_STRENGTH = 1 / (1 - COMPRESS_KNEE);',
+    replace: 'export const COMPRESS_MAX_STRENGTH = strengthForPeak(MEASURED_PEAK_ENVELOPE * 1.25);' },
+  // ニーの値そのもの。2b までこれを留めるテストが 1 本も無く、「代償を記録する」つもりの
+  // テストが副作用で ±0.15% だけ固定していた（監査が逆算）。2c で独立した柵を置いた。
+  { phase: '2c', name: 'ニーを 0.9 へ動かす（2b では 11 本すべてが素通しした変異）',
+    file: 'src/core/compress.ts',
+    find: 'export const COMPRESS_KNEE = 0.8;', replace: 'export const COMPRESS_KNEE = 0.9;' },
   { phase: '2b', name: 'fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）',
     file: 'src/image/blendModel.ts',
     find: '  return sign * Math.min(quantize(Math.abs(value), Math.floor), F16_MAX);',

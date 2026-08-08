@@ -155,6 +155,16 @@ const FAULTS = [
     name: '`CompressPass` の配線を外す（2a まで実際にこうだった）',
     expect: ['G15'],
   },
+  // ---- Phase 2c で足した故障 ----
+  //
+  // **2b までの読み方そのもの** ── 位相を進めずに測る。これが赤くならないなら、
+  // G16 は「位相を流している」と言いながら位相 0 を測っていることになる
+  // （`MEASURED_PEAK_ENVELOPE` が包絡を名乗れてしまったのと同じ形）。
+  {
+    key: 'nosweep',
+    name: 'G16 で位相を進めない（2b までの読み方＝ 位相 0 で測って包絡と呼ぶ）',
+    expect: ['G16'],
+  },
 ];
 
 const args = process.argv.slice(2);
@@ -856,6 +866,7 @@ async function measureInPage(fault) {
     const openWired = await frameAt(3, true);
     const openOff = await frameAt(3, false);
     L.setCompress(false);
+    out.G15phaseZero = true;
     out.G15 = {
       anchorDiffBytes: diffBytes(anchorWired.px8, anchorOff.px8),
       openDiffBytes: diffBytes(openWired.px8, openOff.px8),
@@ -864,6 +875,69 @@ async function measureInPage(fault) {
       peakOff: openOff.peak,
       strengthAtAnchor: compressStrengthFor(2),
       strengthAtOpen: compressStrengthFor(3),
+    };
+  }
+
+  // ---------- G16: **位相を流して測る**（Phase 2c）
+  //
+  // 2b までの HDR 測定（G12 / G15）は、どちらも必ず `freezeRotation(true)` +
+  // `resetRotation()` ＝ **位相 0** で測っていた。位相を流して掃く測定は repo に
+  // 1 行も無く、その結果 `MEASURED_PEAK_ENVELOPE = 2.01758` は「包絡」を名乗りながら
+  // 位相 0 近傍の値でしかなかった。実際に流すと生の峰は 2 桁上がる
+  // （実測: d=3 で 101.0、d=4.25 で 266.75 —— 記録値の 50 倍 / 132 倍）。
+  //
+  // 機構は `core/fit.ts` の `framingHold` である ── カメラ距離は最も広がる位相に
+  // 必要な値で固定されるのに、図は狭い位相で画面のごく一部へ前縮みする
+  // （実測 `fill.x` 0.86 → 0.0303）。同じ総光量が少ない画素へ集まるので峰が跳ねる。
+  //
+  // **この行が守るのは「位相 0 で測って包絡と呼ばない」ことである。**
+  // 故障 `nosweep` は位相を進めない ── そのとき生の峰は記録値を下回るので赤くなる。
+  {
+    /**
+     * 掃引の寸法。**ラダーはローカルの門なので秒を払ってよい**が、青天井にはしない。
+     * `d = 4.25` は 2b が包絡を記録した点そのもの（＝ 最も「上限」と信じられていた点）。
+     * 30 秒ぶんで実測の生の峰は 30 を超える（記録値 2.01758 の 15 倍）ので、
+     * 「記録値は包絡ではない」を示すには十分である。
+     */
+    const SWEEP_DIM = 4.25;
+    const SWEEP_CHUNK_FRAMES = 300;
+    const SWEEP_CHUNKS = 6;
+    const { MEASURED_PEAK_ENVELOPE } = await import('/src/core/compress.ts');
+    const sweep = async (d, wired) => {
+      L.setBloom(false); L.setGrade(false); L.setPath('auto');
+      L.setDimLevel(d);
+      L.freezeRotation(false); L.resetRotation();
+      L.setCompress(wired ? null : false);
+      let peak = 0;
+      for (let c = 0; c < SWEEP_CHUNKS; c++) {
+        // 故障 `nosweep`: 位相を進めない（2b までの読み方＝ 位相 0 で測る）
+        if (!fault.nosweep) {
+          let left = SWEEP_CHUNK_FRAMES;
+          while (left > 0) { const n = Math.min(600, left); L.renderOnce(n); left -= n; }
+        } else {
+          L.renderOnce(1);
+        }
+        const hdr = await L.readbackHDR(0, 0, BUF.w, BUF.h);
+        for (let i = 0; i < hdr.length; i += 4) {
+          const m = Math.max(hdr[i], hdr[i + 1], hdr[i + 2]);
+          if (m > peak) peak = m;
+        }
+      }
+      return peak;
+    };
+    const rawPeak = await sweep(SWEEP_DIM, false);
+    const wiredPeak = await sweep(SWEEP_DIM, true);
+    L.setCompress(false);
+    const s = L.sceneStats();
+    out.G16 = {
+      d: SWEEP_DIM,
+      gatedSeconds: (SWEEP_CHUNKS * SWEEP_CHUNK_FRAMES) / 60,
+      rawPeak,
+      wiredPeak,
+      fillX: s.fill.x,
+      cameraDistance: s.cameraDistance,
+      strength: compressStrengthFor(SWEEP_DIM),
+      recordedEnvelope: MEASURED_PEAK_ENVELOPE,
     };
   }
 
@@ -995,11 +1069,30 @@ function score(r, fault) {
     record('G15', '**門が開くと配線が絵を動かす**', '> 0 バイト相違',
       `${r.G15.openDiffBytes} / ${r.G15.totalBytes} バイト`, r.G15.openDiffBytes > 0,
       `強度 ${r.G15.strengthAtOpen.toFixed(4)} —— これが無い状態が 2a まで続いていた`);
-    record('G15', '配線ありで HDR の峰が 1.0 以下', '≤ 1.0', r.G15.peakWired.toFixed(5),
-      r.G15.peakWired <= 1.0, `配線なしなら ${r.G15.peakOff.toFixed(5)}`);
+    // **「位相 0 で」を見出しに入れる**（Phase 2c）── 2b はこれを書かなかったので、
+    // この行が「どんな位相でも 1.0 以下」を主張していると読めた。実際は位相 0 だけである。
+    record('G15', '配線ありで HDR の峰が 1.0 以下（**位相 0**）', '≤ 1.0',
+      r.G15.peakWired.toFixed(5),
+      r.G15.peakWired <= 1.0,
+      `配線なしなら ${r.G15.peakOff.toFixed(5)} —— 位相を流したときは G16 が見る`);
     record('G15', '配線なしでは峰が 1.0 を超えている（圧縮する物が実在する）', '> 1.0',
       r.G15.peakOff.toFixed(5), r.G15.peakOff > 1.0,
       '超えていないなら、この配線は何も主張していない');
+  }
+  if (r.G16) {
+    const g = r.G16;
+    // 1. **記録値は包絡ではない。** 位相を流せば必ず超える ── 超えないなら掃けていない
+    record('G16', `生の峰が記録値を超える（d=${g.d}・位相 ${g.gatedSeconds}s を流す）`,
+      `> ${g.recordedEnvelope}`, g.rawPeak.toFixed(5),
+      g.rawPeak > g.recordedEnvelope,
+      `記録値の ${(g.rawPeak / g.recordedEnvelope).toFixed(1)} 倍`
+        + ` / fill.x ${g.fillX.toFixed(4)} / カメラ距離 ${g.cameraDistance.toFixed(3)}`);
+    // 2. **本命。** 圧縮は上限 `knee + 1/s = 1` の全単射なので、峰がいくつでもクリップしない。
+    //    2b の設計（有限の設計峰）ではここが 1.026 になり落ちる
+    record('G16', '**配線ありで峰が 1.0 未満（位相を流しても）**', '< 1.0',
+      g.wiredPeak.toFixed(5), g.wiredPeak < 1.0,
+      `強度 ${g.strength.toFixed(4)} / 生の峰 ${g.rawPeak.toFixed(2)} —— `
+        + '有限の設計峰から逆算する設計では上限が 1.026 になり、ここが落ちる');
   }
   if (r.G11) {
     record('G11a', '帯からのはみ出し', '≤ 1.00', r.G11.maxFill.toFixed(4), r.G11.maxFill <= 1.0);
