@@ -261,15 +261,21 @@ describe('シーンへの配線（node で回す）', () => {
    * ここが落ちるのは「包絡が配線から外れた」ときである ── `framingEnvelope.ts` 側の
    * 単体テストは全部緑のまま、この 1 本だけが落ちる形になる。
    */
-  it('門が全開なら、カメラ距離は 1800 フレーム回しても 1 ビットも動かない', () => {
+  /**
+   * **600 フレーム（10 秒）で足りる根拠。** 修正前の実測は `d = 3` で
+   * 0 s の 2.9682 → 20 s の 4.8245 だったので、10 秒でもホールドは大きく育つ。
+   * 1800 に増やしても主張は同じで、**CI の runner で 5 秒の既定を超えた**だけである
+   * （ローカル M1 Max で 2.49 秒 ── 機体差がそのまま出る）。timeout は明示する。
+   */
+  it('門が全開なら、カメラ距離は 600 フレーム回しても 1 ビットも動かない', () => {
     const scene = buildScene();
     scene.setDimLevel(3);
     scene.update(1 / 60);
     const d0 = scene.stats().cameraDistance;
-    for (let i = 0; i < 1800; i++) scene.update(1 / 60);
+    for (let i = 0; i < 600; i++) scene.update(1 / 60);
     const d1 = scene.stats().cameraDistance;
     expect(Object.is(d1, d0), `${d0} → ${d1}`).toBe(true);
-  });
+  }, 30_000);
 
   /**
    * **アンカー窓の縁で跳ねない。**
