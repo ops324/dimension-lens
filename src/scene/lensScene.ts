@@ -45,8 +45,13 @@
  */
 
 import * as THREE from 'three';
-import { clamp01 } from '../math/ease';
 import { composeRotN, foldExtent, liftProject5, safeDist } from '../math/rotationN';
+import {
+  createEnvelopeCache,
+  envelopeFor,
+  extentFor,
+  type EnvelopeCache,
+} from '../core/framingEnvelope';
 import type { PlaneRotation } from '../math/rotation';
 import { imageHalfExtents, type GridSpec } from '../image/grid';
 import { buildColumnLine, effectiveLineCount, lineCountFor } from '../image/columnLine';
@@ -217,6 +222,10 @@ export class LensScene {
   private readonly angles: PlaneRotation[] = createAngleBuffer();
   private readonly matrix = new Float64Array(N * N);
   private readonly extent = new Float64Array(N);
+  /** 位相包絡の表（Phase 2c-ii）。**各スロットは 1 セッションに 1 度しか計算しない** */
+  private readonly envelopeCache: EnvelopeCache = createEnvelopeCache();
+  /** 直近に使った包絡。`dimChanged` でないフレームは引き直さない */
+  private lastEnvelope: Spread = { aX: 0, aY: 0, zHi: 0 };
   /**
    * 軸が存在するか（SPEC §2.2 の「その軸は存在しないと表明する」の、実装側）。
    * 添字は `[u, v, L, a, b]`。`setSource` が `scales.degenerate` から作る。
@@ -528,9 +537,9 @@ export class LensScene {
     // 中央 128×128 の **65,536 画素中 0 個**が相違。つまりこれは「黙って壊れる」欠落ではなく
     // **「黙って何も起きない」欠落**で、NaN より発見が遅い。
     // だからここでコードに書き、`copy.ts` の `DEGENERATE_COPY` が言葉で表明する。
-    for (let k = 0; k < N; k++) {
-      this.extent[k] = this.axisPresent[k] ? clamp01(d - k) : 0;
-    }
+    // 式は `core/framingEnvelope.ts` の `extentFor` が唯一の源 ── 包絡の見積もりが
+    // **同じ extent** を使わなければ、見積もりは別の図についての数字になる（Phase 2c-ii）
+    extentFor(d, this.axisPresent, this.extent);
 
     composeRotN(this.angles, N, this.matrix);
     foldExtent(this.matrix, N, this.extent);
@@ -559,7 +568,7 @@ export class LensScene {
     // ---- フレーミング（`refreshConfigs` を通すので潰しの補正より**先**）----
     // s0 は距離で決まり、`collapseWeight` は s0 で決まる。逆順に書くと
     // 補正が 1 フレーム古い s0 に乗り、リサイズ直後だけ明るさがずれる。
-    this.updateCamera(dimChanged, batch.positions, count, cw > 0, pw > 0);
+    this.updateCamera(dimChanged, batch.positions, count, cw, pw > 0);
 
     // ---- 潰しの補正 ----
     const cfg = grid ? this.gridConfig : this.lineConfig;
@@ -611,9 +620,14 @@ export class LensScene {
     dimChanged = true,
     positions?: Float32Array,
     count = 0,
-    cloudVisible = false,
+    /**
+     * 雲の重み（**真偽ではなく値**・Phase 2c-ii）。包絡をこの重みで入れるので、
+     * `setPath('cloud')` の測定では門に関係なく満量の包絡が使われる。
+     */
+    cloudW = 0,
     plateVisible = true,
   ): void {
+    const cloudVisible = cloudW > 0;
     const camera = this.camera;
     const { aX, aY } = imageHalfExtents(this.source.width, this.source.height);
     const input = { aX, aY, ...this.layoutParams, fovDeg: CAMERA_FOV };
@@ -640,6 +654,58 @@ export class LensScene {
     this.lastSpread = spread;
 
     /**
+     * **位相包絡を先に入れる**（Phase 2c-ii）。
+     *
+     * これが無いと `framingHold` は「そのフレームで実際に見えた広がり」からしか
+     * 育たないので、**同じ `dimLevel` に留まるあいだ図が単調に小さくなる**
+     * （実測: `d = 3` で 140 秒かけて 2.9682 → 6.0446、**2.04 倍**）。
+     * しかもそれは時間の関数なので、`d ≠ 2` の測定値が「そこに何秒いたか」で変わる。
+     *
+     * 到達しうる広がりは `dimLevel` だけで決まる（位相は閉軌道で、`gate` は
+     * その上の速さしか変えない）ので、**先に掃いて先に置ける**。
+     * 見積もりであって上界ではないので `framingHold` は外さない ── 外れたぶんは
+     * ホールドが拾う。実測では 6.8693 を先に置くので、拾う余地はほとんど無い。
+     */
+    if (cloudVisible && this.source.base.length > 0) {
+      if (dimChanged) {
+        this.lastEnvelope = envelopeFor(
+          this.envelopeCache,
+          this.source.base,
+          this.source.grid.cols * this.source.grid.rows,
+          this.axisPresent,
+          this.dimLevel,
+          this.cascadeDist,
+        );
+      }
+    } else {
+      this.lastEnvelope = { aX: 0, aY: 0, zHi: 0 };
+    }
+    /**
+     * **包絡は門で入れる。**
+     *
+     * 素の包絡をそのまま使うと、アンカー窓を出た瞬間にカメラが跳ぶ ──
+     * 実測 `d = 2.1 → 2.11` で **1.9636 → 4.7330（2.41 倍）**。
+     * そのとき板の重みはまだ **0.9976** で、**写真はまだ見えている**。
+     * つまり「写真が突然 41% に縮む」という壊れ方をする。
+     *
+     * 見えていない雲のために構図を決めてはいけない。→ 板から包絡へ `rotationGate` で渡す。
+     * 圧縮（§4.21）・回転・板と雲のクロスフェードと**同じ 1 つの門**である ──
+     * 引いていくことと、写真が雲へ解けることが、同じところから出る。
+     *
+     * 代償: 門が途中の帯（`d ∈ (2.1, 2.45)`）では目標が包絡に届かないので、
+     * そこではホールドがまだ育ちうる。**それは正しい** ── その帯では写真が見えており、
+     * 見えているものを外へ出さないことのほうが優先される。
+     */
+    const g = cloudW > 1 ? 1 : cloudW;
+    const plate = plateSpread(aX, aY);
+    const target: Spread = {
+      aX: plate.aX + (this.lastEnvelope.aX - plate.aX) * g,
+      aY: plate.aY + (this.lastEnvelope.aY - plate.aY) * g,
+      zHi: plate.zHi + (this.lastEnvelope.zHi - plate.zHi) * g,
+    };
+    const framed = unionSpread(spread, target);
+
+    /**
      * **アンカーの距離が下限である。**
      *
      * これが無いと `dimLevel = 0` で図が 1 点に潰れた瞬間 `spread` がゼロになり、
@@ -650,7 +716,7 @@ export class LensScene {
      * 「潰れる」という作品の主張と、こちらのほうが合っている。
      * `dimLevel = 2` では `needDistance` がちょうどこの値なので、`max` は恒等である。
      */
-    const need = Math.max(this.anchorDistance(), needDistance(input, spread));
+    const need = Math.max(this.anchorDistance(), needDistance(input, framed));
     this.lastNeed = need;
     this.heldDistance = framingHold(this.heldDistance, need, dimChanged);
     this.cameraDistance = this.heldDistance;
