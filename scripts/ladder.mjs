@@ -81,28 +81,63 @@ const MEASURE_BUFFER = { width: 988, height: 778 };
  * `anchors.test.ts` が node で厳密に固定している値。**ここに写しを置く理由**:
  * ブラウザ側が同じ数を出すことを確かめるのがこの表の役目で、
  * ブラウザから読んだ値を自分自身と比べても何も分からない（§7.7 の `fillRatios` の教訓）。
+ *
+ * ## ティア別の表にした（Phase 2c-iii）
+ *
+ * 2a〜2c-ii のあいだ、この表は **HIGH の 1 枚だけ**だった。GitHub の runner は 4 コアで
+ * **BALANCED** で起動するので、格子に依存する 6 行が CI で永久に `➖`（採点しない）だった。
+ * SPEC はこれを「`__LENS__` にティアを固定する口が無いから」と書いていたが、**それは偽である** ──
+ * 必要だったのは口ではなく**ティアごとの期待値**だった。
+ *
+ * BALANCED / ULTRA の値は `anchors.test.ts` と同じ式を node で回して出し、
+ * **BALANCED は CI の実出力と 5 値すべてが厳密に一致することを確認してから**ここへ写した
+ * （実測: `s0` 3.3851792828685254 / `gain` 0.45296699544158425 /
+ * `cascadeDist` 3.3746125074981395 / 格子 251×157 —— #24 までの CI ログ）。
+ * **ULTRA だけはまだどの機体でも観測されていない**（node の予測値である）。
+ *
+ * ## ティアに依らない量と、依る量
+ *
+ * `cameraDistance` / `fillX` / `meanHex` は **3 ティアで同一**である ──
+ * 格子は点の間隔しか変えず、板の構図を変えないため。だから下では別扱いにする。
+ *
+ * ## 写しであって計算ではない
+ *
+ * ここで `fitGrid` や `gainFor` を import して計算してはいけない ──
+ * それは作品を作品自身で採点する（`x/x`）。**手で写した数字**であることに意味がある。
  */
+const TIER_ANCHORS = {
+  BALANCED: {
+    s0: 3.3851792828685254,
+    gain: 0.45296699544158425,
+    cascadeDist: 3.3746125074981395,
+    gridW: 251,
+    gridH: 157,
+    /** CI（runner・4 コア）で実測済み */
+    observed: 'CI runner',
+  },
+  HIGH: {
+    s0: 2.247830687830687,
+    gain: 0.4530724335144705,
+    cascadeDist: 3.38382867097012,
+    gridW: 378,
+    gridH: 236,
+    /** ローカル（M1 Max）で実測済み。§7.7 の表そのもの */
+    observed: 'M1 Max',
+  },
+  ULTRA: {
+    s0: 1.6825346534653463,
+    gain: 0.4540684625258778,
+    cascadeDist: 3.3884220034953074,
+    gridW: 505,
+    gridH: 315,
+    /** **まだどの機体でも観測されていない**（node の予測値） */
+    observed: null,
+  },
+};
+
+/** ティアに依らない量。**3 ティアで同一であることを node で確認してある** */
 const ANCHORS = {
-  /**
-   * **この表は HIGH ティアの表である**（Phase 2a で判明）。
-   *
-   * `bootTier()` は `hardwareConcurrency` / `deviceMemory` / DPR を読むので、
-   * **ティアは機体で変わる** ── GitHub の runner（4 コア）は **BALANCED** で起動し、
-   * 格子は 251×157、`s0` は 3.3851792828685254 になる。
-   * 「アンカーは CPU で決まるからラスタライザに依らない」は真だが、
-   * **機体に依らないとは言っていなかった**。1 機体でしか測っていなかったので気づかなかった。
-   *
-   * → ティアが違うときは**採点しない**（`null`）。緑にも赤にもせず、
-   * 「採点しなかった」と出す ── 飛ばした行を通過と読ませない。
-   * どのティアでも採点できるようにするには `__LENS__` にティアを固定する口が要る（Phase 2c）。
-   */
-  tier: 'HIGH',
-  s0: 2.247830687830687,
-  gain: 0.4530724335144705,
   cameraDistance: 1.9635938049105979,
-  cascadeDist: 3.38382867097012,
-  gridW: 378,
-  gridH: 236,
   meanHex: '#8d8d8e',
   fillX: 0.86,
 };
@@ -160,6 +195,17 @@ const FAULTS = [
   // **2b までの読み方そのもの** ── 位相を進めずに測る。これが赤くならないなら、
   // G16 は「位相を流している」と言いながら位相 0 を測っていることになる
   // （`MEASURED_PEAK_ENVELOPE` が包絡を名乗れてしまったのと同じ形）。
+  // ---- Phase 2c-iii ----
+  //
+  // ティア別のアンカー表を置くと、**表を選ぶのが作品側の出力**（`stats().tier`）になる。
+  // `bootTier()` が壊れて別のティアを返すようになっても、ラダーがその表を選んで
+  // 緑のままになりうる ── 独立監査が指摘した `x/x` の変種である。
+  // `bootTier()` は構造上 ULTRA を返し得ないので、この故障はどの機体でも赤になる。
+  {
+    key: 'wrongtier',
+    name: '検出したティアを偽る（`bootTier()` が壊れた状態）',
+    expect: ['ENV'],
+  },
   {
     key: 'nosweep',
     name: 'G16 で位相を進めない（2b までの読み方＝ 位相 0 で測って包絡と呼ぶ）',
@@ -265,7 +311,7 @@ async function runOnce(page, context, fault, consoleErrors) {
   record('ENV', '取り込み', 'ok', traces.lensIngest ?? '(なし)', traces.lensIngest === 'ok');
   record('ENV', '描画', 'ok', traces.lensRender ?? '(なし)', traces.lensRender === 'ok');
 
-  const anchors = await page.evaluate(() => {
+  const anchors = await page.evaluate((f) => {
     const L = window.__LENS__;
     L.setDimLevel(2); L.freezeRotation(true); L.resetRotation();
     L.setBloom(false); L.setGrade(false); L.setCompress(false);
@@ -274,21 +320,55 @@ async function runOnce(page, context, fault, consoleErrors) {
     return {
       s0: s.s0, gain: s.gain, cameraDistance: s.cameraDistance, cascadeDist: s.cascadeDist,
       gridW: s.gridW, gridH: s.gridH, fillX: s.fill.x, meanHex: st.meanHex,
-      sampleWeight: s.sampleWeight, tier: st.tier,
+      sampleWeight: s.sampleWeight,
+      // 故障 `wrongtier`: 検出したティアを偽る。`bootTier()` が壊れた状態の模擬で、
+      // **ティア別の表が「答案を選ぶ主体」を採点していない**なら、これは緑のまま通る
+      tier: f.wrongtier ? 'ULTRA' : st.tier,
+      // `bootTier()` の**入力**をそのまま持ち帰る（Phase 2c-iii）。
+      // これが無いと、ティア別の表は「答案を選ぶ主体が採点対象」になる ── 監査の指摘。
+      cores: navigator.hardwareConcurrency ?? 0,
+      memory: navigator.deviceMemory ?? 0,
+      dpr: window.devicePixelRatio || 1,
     };
-  });
-  // ティアに依らない行と、格子（＝ティア）で決まる行を分ける
-  const tierMatch = anchors.tier === ANCHORS.tier;
-  record('ENV', 'ティア', `${ANCHORS.tier}（アンカー表のティア）`,
-    `${anchors.tier}（格子 ${anchors.gridW}×${anchors.gridH}）`, tierMatch ? true : null,
-    tierMatch ? '' : 'ティアが違うので、格子に依存する行は採点しない');
+  }, fault);
+  // ティアに依らない行と、格子（＝ティア）で決まる行を分ける。
+  // **表はティアごとに在る**（Phase 2c-iii）ので、どのティアで起動しても採点できる ──
+  // 知らないティア名のときだけ `null`（採点しない）へ落ちる。
+  /**
+   * **`bootTier()` そのものを採点する**（Phase 2c-iii）。
+   *
+   * ティア別の表を置くと、表を選ぶのが `stats().tier` ＝ 作品側の出力になる。
+   * つまり `bootTier()` が壊れて常に BALANCED を返すようになっても、
+   * ラダーは BALANCED の表を選んで緑のままになる ── **答案を選ぶ主体が採点対象**という
+   * `x/x` の変種で、独立監査がこれを指摘した。
+   *
+   * → 規則を**ここへ手で写し**、`bootTier()` の入力（コア数・メモリ・DPR）から
+   * 期待ティアを独立に出して突き合わせる。`quality.ts` を import してはいけない ──
+   * それをやると本当に `x/x` になる。
+   */
+  const expectTier = (() => {
+    const { cores, memory, dpr } = anchors;
+    if (cores >= 8 && memory >= 8 && dpr <= 2) return 'HIGH';
+    return 'BALANCED';
+  })();
+  record('ENV', '`bootTier()` が入力どおりのティアを返す', expectTier, anchors.tier,
+    anchors.tier === expectTier,
+    `コア ${anchors.cores} / メモリ ${anchors.memory} / DPR ${anchors.dpr}`);
+
+  const expected = TIER_ANCHORS[anchors.tier];
+  record('ENV', 'ティア', '表に在るティア', `${anchors.tier}（格子 ${anchors.gridW}×${anchors.gridH}）`,
+    expected ? true : null,
+    expected
+      ? (expected.observed ? `期待値の出どころ: ${expected.observed}` : '**未観測のティア** —— この実行が初回の実測になる')
+      : '表に無いティアなので採点しない');
   for (const k of ['cameraDistance', 'fillX']) {
     record('ENV', `アンカー ${k}（ティアに依らない）`, String(ANCHORS[k]), String(anchors[k]),
       Object.is(anchors[k], ANCHORS[k]), 'Object.is');
   }
   for (const k of ['s0', 'gain', 'cascadeDist', 'gridW', 'gridH']) {
-    record('ENV', `アンカー ${k}（ティア依存）`, String(ANCHORS[k]), String(anchors[k]),
-      tierMatch ? Object.is(anchors[k], ANCHORS[k]) : null, tierMatch ? 'Object.is' : '');
+    record('ENV', `アンカー ${k}（ティア依存・${anchors.tier}）`,
+      expected ? String(expected[k]) : '(表に無い)', String(anchors[k]),
+      expected ? Object.is(anchors[k], expected[k]) : null, expected ? 'Object.is' : '');
   }
   record('ENV', 'アンカー meanHex', ANCHORS.meanHex, anchors.meanHex,
     anchors.meanHex === ANCHORS.meanHex);
