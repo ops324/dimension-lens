@@ -663,20 +663,43 @@ export class LensScene {
      *
      * 到達しうる広がりは `dimLevel` だけで決まる（位相は閉軌道で、`gate` は
      * その上の速さしか変えない）ので、**先に掃いて先に置ける**。
-     * 見積もりであって上界ではないので `framingHold` は外さない ── 外れたぶんは
-     * ホールドが拾う。実測では 6.8693 を先に置くので、拾う余地はほとんど無い。
+     *
+     * ## `if (dimChanged)` の門を外した（Phase 2c-iv・実測）
+     *
+     * 2c-ii はここを `if (dimChanged)` で囲っていた。**そのせいで `layout()` を
+     * 1 回通ると包絡が消え、二度と戻らなかった** ── `layout()` は `positions` 無しで
+     * `updateCamera(true)` を呼ぶので必ず下の `else` を通って `lastEnvelope` を 0 にし、
+     * その直後の `update()` は `dimLevel` が動いていないので `dimChanged === false`、
+     * つまり引き直されない。
+     *
+     * `relayout()` は `engine.onResize` に配線されている（`main.ts`）ので、
+     * **ウィンドウを 1 回リサイズすれば必ず踏む**。実測（`d = 3` / 988×778）:
+     *
+     * | | カメラ距離 |
+     * |---|---|
+     * | resize 前（50 秒後も同じ） | 6.869252 |
+     * | resize 直後 | **2.558621** |
+     * | + 10 秒 | 2.739984 |
+     * | + 60 秒 | 5.335940 |
+     * | + 300 秒 | 6.044646（まだ登り中） |
+     *
+     * **写真が一瞬 2.68 倍に跳ね、そこから数分かけて縮んでいく** ── 2c-ii が消したはずの
+     * 「留まっていると絵が引いていく」が、resize 1 回でそのまま戻っていた。
+     *
+     * 門を外しても掃き直しは起きない。**`EnvelopeCache.filled` が「各スロットは
+     * 1 セッションに 1 度しか計算しない」を既に保証している**ので、2 回目以降は
+     * 表を引くだけである（`slotFor` 2 回と `max` 3 回）。門が節約していたのは
+     * その数十 ns だけで、代わりに「0 のまま固着する」状態を作っていた。
      */
     if (cloudVisible && this.source.base.length > 0) {
-      if (dimChanged) {
-        this.lastEnvelope = envelopeFor(
-          this.envelopeCache,
-          this.source.base,
-          this.source.grid.cols * this.source.grid.rows,
-          this.axisPresent,
-          this.dimLevel,
-          this.cascadeDist,
-        );
-      }
+      this.lastEnvelope = envelopeFor(
+        this.envelopeCache,
+        this.source.base,
+        this.source.grid.cols * this.source.grid.rows,
+        this.axisPresent,
+        this.dimLevel,
+        this.cascadeDist,
+      );
     } else {
       this.lastEnvelope = { aX: 0, aY: 0, zHi: 0 };
     }

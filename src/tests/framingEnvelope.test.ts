@@ -12,6 +12,7 @@
  * 4 が本体である。1〜3 はそれを支える前提で、どれが壊れても 4 は静かに嘘になる。
  */
 
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import {
   ENVELOPE_CANDIDATES,
@@ -37,6 +38,7 @@ import { fitGrid, TIER_BUDGET } from '../image/grid';
 import { makeLiftPayload } from '../ingest/session';
 import { clamp01 } from '../math/ease';
 import { LensScene } from '../scene/lensScene';
+import { CAMERA_FOV } from '../core/engine';
 
 function specimen() {
   const s = makeSpecimen0();
@@ -272,6 +274,50 @@ describe('シーンへの配線（node で回す）', () => {
     scene.setDimLevel(3);
     scene.update(1 / 60);
     const d0 = scene.stats().cameraDistance;
+    for (let i = 0; i < 600; i++) scene.update(1 / 60);
+    const d1 = scene.stats().cameraDistance;
+    expect(Object.is(d1, d0), `${d0} → ${d1}`).toBe(true);
+  }, 30_000);
+
+  /**
+   * **`layout()` を挟んでも同じでなければならない**（Phase 2c-iv）。
+   *
+   * 2c-ii は包絡の引き直しを `if (dimChanged)` で囲っていた。`layout()` は `positions`
+   * 無しで `updateCamera(true)` を呼ぶので `cloudVisible === false` の枝に入って
+   * `lastEnvelope` を 0 にし、その直後の `update()` は `dimLevel` が動いていないので
+   * **二度と引き直さない**。`relayout()` は `engine.onResize` に配線されているので、
+   * **ウィンドウを 1 回リサイズすれば必ず踏む**。
+   *
+   * 実測（修正前・`d = 3` / 988×778）: resize 前 6.869252（50 秒後も同じ）
+   * → 直後 **2.558621** → 60 秒 5.335940 → 300 秒 6.044646（まだ登り中）。
+   * 写真が一瞬 2.68 倍に跳ね、そこから数分かけて縮む。
+   *
+   * **上の 1 本ではこれを捕まえられない** ── `setDimLevel` のあとに `layout()` を
+   * 一度も呼ばないからである。「配線されている」と「配線が生き続ける」は別の主張だった。
+   *
+   * `camera` は node でも作れる（three の `PerspectiveCamera` は GL を要求しない）。
+   * 寸法は §7.7 の測定 viewport と同じ 988×778 に合わせる。
+   */
+  it('layout() を挟んでも、カメラ距離は 600 フレーム回して 1 ビットも動かない', () => {
+    const scene = buildScene();
+    const relayout = (): void => {
+      scene.layout({
+        camera: new THREE.PerspectiveCamera(CAMERA_FOV, 988 / 778, 0.1, 100),
+        viewportAspect: 988 / 778,
+        bandFrac: 1,
+        pxPerWorld: 778 / (2 * Math.tan((CAMERA_FOV * Math.PI) / 360)),
+        maxPointSize: 1024,
+      });
+    };
+    relayout();
+    scene.setDimLevel(3);
+    scene.update(1 / 60);
+    const d0 = scene.stats().cameraDistance;
+    // ここが「ウィンドウを 1 回リサイズした」に相当する（同じ寸法でも layout() は走る）
+    relayout();
+    scene.update(1 / 60);
+    const afterLayout = scene.stats().cameraDistance;
+    expect(Object.is(afterLayout, d0), `layout 直後 ${d0} → ${afterLayout}`).toBe(true);
     for (let i = 0; i < 600; i++) scene.update(1 / 60);
     const d1 = scene.stats().cameraDistance;
     expect(Object.is(d1, d0), `${d0} → ${d1}`).toBe(true);
