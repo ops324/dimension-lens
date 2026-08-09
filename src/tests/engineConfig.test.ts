@@ -6,6 +6,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as THREE from 'three';
 import { CAMERA_FOV } from '../core/engine';
 import { bootTier, TIERS, tierFor } from '../core/quality';
@@ -116,5 +118,55 @@ describe('板のテクスチャ', () => {
     expect(plate.object.visible).toBe(true);
     expect(plate.material.opacity).toBe(1);
     plate.dispose();
+  });
+});
+
+/**
+ * **ティアの `dpr` / `samples` は、どこにも配線されていない**（Phase 2c-iii で判明）。
+ *
+ * 2b の「`CompressPass` を呼ぶ者がどこにも無かった」「光過敏の配慮が 1 画素も
+ * 変えていなかった」と**同じ型**である ── 表に書いてあるのに効いていない。
+ *
+ * 実測（`grep`）: `Engine.setQuality()` の呼び出し元が**ゼロ**。よって
+ * `dprCap` は `BOOT_DPR_CAP = 2` のまま固定され、`main.ts` が `tier` から実際に
+ * 使うのは `tier.budget`（格子）だけである。CI の runner は BALANCED（`dpr: 1.5`）で
+ * 起動するのに drawingBuffer が **988×778**（＝ DPR 2）だったのは、これが理由である。
+ *
+ * **この段階では直さない**（作品の判断）。配線すると BALANCED の機体で buffer が
+ * 741×584 になり、§7.7 のアンカー表が全滅する ── 昇格とアンカーは別の PR で扱う。
+ * ここが守るのは「**黙って忘れられないこと**」だけである。
+ *
+ * → 配線する PR では、このブロックごと消して、代わりにアンカー表を作り直すこと。
+ */
+describe('ティアの dpr / samples は未配線である（Phase 2c-iii の記録）', () => {
+  const engineSrc = readFileSync(join(process.cwd(), 'src/core/engine.ts'), 'utf8');
+  const srcFiles = readdirSync(join(process.cwd(), 'src'), { recursive: true })
+    .filter((f): f is string => typeof f === 'string' && f.endsWith('.ts'))
+    .map((f) => join(process.cwd(), 'src', f));
+
+  it('setQuality の呼び出し元が 1 つも無い', () => {
+    // 定義そのものと、この検査自身（正規表現の文字列が一致する）は除く
+    const callers = srcFiles.filter((f) => {
+      if (f.endsWith('core/engine.ts') || f.includes('/tests/')) return false;
+      return /\.setQuality\s*\(/.test(readFileSync(f, 'utf8'));
+    });
+    expect(callers, `呼び出し元: ${callers.join(', ')}`).toEqual([]);
+  });
+
+  it('dprCap は BOOT_DPR_CAP に固定されたままである', () => {
+    expect(engineSrc).toContain('const BOOT_DPR_CAP = 2;');
+    expect(engineSrc).toContain('private dprCap = BOOT_DPR_CAP;');
+  });
+
+  /**
+   * **表には値が在る。** 未配線であることと、値が無いことは別である ──
+   * 配線したときに何が起きるかを、ここで数字にしておく。
+   */
+  it('配線すれば BALANCED は DPR 1.5 になる（＝ アンカーが動く）', () => {
+    expect(TIERS.BALANCED.dpr).toBe(1.5);
+    expect(TIERS.HIGH.dpr).toBe(2);
+    // 測定 viewport 494×389 での drawingBuffer
+    expect(494 * TIERS.BALANCED.dpr).toBe(741);
+    expect(494 * TIERS.HIGH.dpr).toBe(988);
   });
 });
