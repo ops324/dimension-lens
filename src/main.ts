@@ -243,7 +243,7 @@ async function boot(): Promise<void> {
         + ` / s0 ${s.s0.toFixed(2)}px / スプライト ${s.spritePx.toFixed(1)}px / gain ${s.gain.toFixed(4)}`
         + ` / カメラ距離 ${s.cameraDistance.toFixed(3)} / カスケード dist ${s.cascadeDist.toFixed(3)}`
         + ` / アンカー ${s.anchored} / バッファ ${s.buffer} / 線 ${s.lineCount} 点`
-        + ` / sampleWeight ${s.sampleWeight} / 加算深度 ${s.additionDepth}`,
+        + ` / sampleWeight ${s.sampleWeight} / 加算深度(モデル) ${s.modelledAdditionDepth}`,
     );
     console.info('[LENS] window.__LENS__ で測定できる。');
   }

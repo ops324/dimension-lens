@@ -55,7 +55,7 @@ import {
 import type { PlaneRotation } from '../math/rotation';
 import { imageHalfExtents, type GridSpec } from '../image/grid';
 import { buildColumnLine, effectiveLineCount, lineCountFor } from '../image/columnLine';
-import { collapseWeight, additionDepth } from '../image/spriteGain';
+import { collapseWeight, modelledAdditionDepth } from '../image/spriteGain';
 import { axisPresence, type BlockScales } from '../image/stats';
 import {
   framingHold,
@@ -155,8 +155,12 @@ export interface LensSceneStats {
   calibrated: boolean;
   /** 潰しの補正。`dimLevel = 2` で厳密に 1 */
   sampleWeight: number;
-  /** half-float に積まれる加算回数の見積もり（点数ではない） */
-  additionDepth: number;
+  /**
+   * 加算回数の**モデル**（`spriteGain.modelledAdditionDepth`）。点数ではない。
+   * **測定ではない** ── `d ≥ 2.25` では実測の最大を 2.3〜2.9 倍**過小**に見積もる（§4.6）。
+   * 採点行の判定に使わないこと（`x/x` になる）。
+   */
+  modelledAdditionDepth: number;
   /**
    * 5 軸 `[u, v, L, a, b]` がこの画像に存在するか（Phase 1c・SPEC §2.2）。
    * **`extent` を 0 に固定する側の観測点。** これを出さないと
@@ -603,7 +607,7 @@ export class LensScene {
     };
     const sampleWeight = collapseWeight(collapse);
     this.lastSampleWeight = sampleWeight;
-    this.lastDepth = additionDepth(collapse);
+    this.lastDepth = modelledAdditionDepth(collapse);
     batch.setSampleWeight(sampleWeight);
     other.setSampleWeight(1);
   }
@@ -799,7 +803,7 @@ export class LensScene {
       gain: cfg.gain,
       calibrated: cfg.calibrated,
       sampleWeight: this.lastSampleWeight,
-      additionDepth: this.lastDepth,
+      modelledAdditionDepth: this.lastDepth,
       // SPEC §2.2 の「その軸は存在しないと表明する」の、観測できる形（Phase 1c）
       axisPresent: [...this.axisPresent],
       extent: [...this.extent],

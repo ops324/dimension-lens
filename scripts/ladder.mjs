@@ -211,6 +211,16 @@ const FAULTS = [
     name: 'G16 で位相を進めない（2b までの読み方＝ 位相 0 で測って包絡と呼ぶ）',
     expect: ['G16'],
   },
+  // ---- Phase 2c-v ----
+  //
+  // **予算 0.2% そのものを試す。** 既存の `colorfield` は `dev ≈ −100%` を出すので
+  // 0.5% でも 0.2% でも同じように赤く、予算の数字を緩い方へ動かしても誰も気づかなかった。
+  // 0.3% は 0.2%（新）と 0.5%（旧）の間なので、**予算を戻した瞬間にこの故障が素通りする**。
+  {
+    key: 'g12budget',
+    name: '重ね合わせを 0.3% だけ壊す（予算 0.2% を 0.5% へ戻すと素通りする）',
+    expect: ['G12'],
+  },
 ];
 
 const args = process.argv.slice(2);
@@ -731,7 +741,7 @@ async function measureInPage(fault) {
     const recon = meas.map((v) => v / phase);
     const target = centreTarget(d === 0 ? 1 : s.linePoints);
     collapse['d' + d] = {
-      buffer: s.buffer, linePoints: s.linePoints, depth: s.additionDepth,
+      buffer: s.buffer, linePoints: s.linePoints, depth: s.modelledAdditionDepth,
       spritePx: s.spritePx, rowSpread, phase,
       measuredCode: meas.map(linearToCode), reconCode: recon.map(linearToCode),
       targetCode: target.map(linearToCode), deltaE: dE(recon, target),
@@ -740,10 +750,46 @@ async function measureInPage(fault) {
   }
   out.collapse = collapse;
 
-  // ---------- G10: 加算深度
-  const depths = [];
-  for (let d = 0; d <= 5; d += 0.25) { setup(d, 'auto'); depths.push([d, L.sceneStats().additionDepth]); }
-  out.G10 = { max: Math.max(...depths.map((x) => x[1])) };
+  // ---------- G10: 加算深度（**掃引をやめた**・Phase 2c-v）
+  //
+  // 2a〜2c-iv はここを `for (let d = 0; d <= 5; d += 0.25)` で掃いて最大 **64** を得ていた。
+  // だが深度は閉形式で、`extentY → 0⁺` で `ny` が `rows` に張り付く:
+  //
+  //     depth = min(cols, ⌊K_SPRITE/extentX⌋+1) × min(rows, ⌊K_SPRITE/extentY⌋+1)
+  //
+  // つまり **到達しうる最大は `4 × rows`**（`⌊3.85⌋+1 = 4` はティア不変）で、
+  // HIGH 944 / BALANCED 628 / ULTRA 1260。**0.25 刻みはその帯を 1 点も採らない** ──
+  // `n ≤ 512` が緑だったのは掃引の粗さのおかげである。
+  //
+  // **刻みを細かくするのは直し方として誤り**（§0.1 規律 9「窓は機構から導く」）。
+  // 帯の幅は ULTRA で 0.01222 しかないので、0.01 刻みでも踏み損ねる。
+  // → **折れ点を列挙する。** 折れ点は `extentY = K_SPRITE/m`（m = 1…rows）に全部ある。
+  {
+    const probe = [];
+    const s2 = (() => { setup(2, 'auto'); return L.sceneStats(); })();
+    const rows = s2.gridH;
+    // 折れ点そのものと、その両側（`extentY = d − 1`）
+    const eps = [];
+    for (let m = 1; m <= rows; m++) {
+      const e = 3.85 / m;
+      if (e > 0 && e <= 1) { eps.push(e * 0.999999, e, e * 1.000001); }
+    }
+    eps.push(1e-7, 1e-4, 1e-3, 1);
+    for (const e of eps) {
+      setup(1 + e, 'auto');
+      probe.push([1 + e, L.sceneStats().modelledAdditionDepth]);
+    }
+    // 掃引で見える範囲も併記する（0.25 刻みが何を見ていたか）
+    const coarse = [];
+    for (let d = 0; d <= 5; d += 0.25) { setup(d, 'auto'); coarse.push(L.sceneStats().modelledAdditionDepth); }
+    let max = 0, at = 0;
+    for (const [d, n] of probe) if (n > max) { max = n; at = d; }
+    out.G10 = {
+      max, at, rows, closedForm: 4 * rows,
+      coarseMax: Math.max(...coarse),
+      breakpoints: eps.length,
+    };
+  }
 
   // ---------- G11: 帯からのはみ出しと近平面の余裕
   if (!fault.quick) {
@@ -842,12 +888,24 @@ async function measureInPage(fault) {
       const Ib = await integrate();
       // 故障 `colorfield`: 和の場を作らず片方だけを測る
       L.setColorField(fault.colorfield ? 'image' : 'image+mean');
-      const Iab = await integrate();
+      const IabRaw = await integrate();
+      /**
+       * 故障 `g12budget`: 重ね合わせを **0.3% だけ**壊す。
+       *
+       * **予算そのものを試す唯一の歯である。** `colorfield` は `dev ≈ −100%` を出すので
+       * 0.5% でも 0.2% でも同じように赤く、**この数字を緩い方へ動かしても誰も気づかない**
+       * （§0.1 規律 7 が名指しで警告している形）。`scripts/teeth.mjs` の台帳は `src/` しか
+       * 書き換えないので、あちらでは構造的にこの歯を作れない。
+       *
+       * 0.3% を選んだのは 0.2%（新）と 0.5%（旧）の間だからで、**予算を 0.5% へ戻した瞬間に
+       * この故障が素通りする**。代償は隠さない ── これは機構ではなく**数字そのもの**を試す歯である。
+       */
+      const Iab = fault.g12budget ? IabRaw * 1.003 : IabRaw;
       L.setColorField('image');
       const s = L.sceneStats();
       out.G12.push({
         d, Ia, Ib, Iab, dev: (Iab - (Ia + Ib)) / Iab,
-        depth: s.additionDepth, points: s.pointCount, extent: [...s.extent],
+        depth: s.modelledAdditionDepth, points: s.pointCount, extent: [...s.extent],
       });
     }
     L.setPath('auto');
@@ -1084,19 +1142,91 @@ function score(r, fault) {
   collapseRow('G8a', 'd1', 'd=1 列平均線', 2.0);
   collapseRow('G8b', 'd0.5', 'd=0.5 線', 2.0);
   collapseRow('G9', 'd0', 'd=0 平均色', 3.0);
-  record('G10', '加算深度（全 dimLevel）', 'n ≤ 512', String(r.G10.max), r.G10.max <= 512);
+  /**
+   * **G10 は 2 行になった**（Phase 2c-v）。
+   *
+   * 1 行目は「モデルが閉形式どおりか」＝ **掃引が折れ点を捕まえているか**の確認で、
+   * これは通る。2 行目が本体 ── **`n ≤ 512` は実際に破れている。**
+   *
+   * 破れを「予算を上げて」隠すことも（§0.1 規律 7・緩い方へ外す）、
+   * 「0.25 刻みの 21 点」へ主張を狭めることも（§7.9.2・見ていないものを合格に見せる）しない。
+   * **未修正のまま、値を固定して記録する** ── 2c-iii がティアの `dpr`/`samples` 未配線を
+   * そう扱ったのと同じ形である。畳み込みで直すのは次フェーズ（§4.6）。
+   */
+  record('G10', '深度の掃引が折れ点を捕まえている', `閉形式 4×${r.G10.rows} = ${r.G10.closedForm}`,
+    String(r.G10.max), r.G10.max === r.G10.closedForm,
+    `折れ点 ${r.G10.breakpoints} 点を列挙 / 最大は d=${r.G10.at.toFixed(7)}`
+    + ` / **0.25 刻みの掃引が見ていたのは ${r.G10.coarseMax}** —— 2c-iv までの G10 はこれで緑だった`);
+  /**
+   * **既知の欠陥の固定。** 予算ではなく**記録値との一致**を見る ── 直ったら赤くなるし、
+   * 悪化しても赤くなる。どちらも「知らないうちに動いた」を防ぐ。
+   */
+  const G10_RECORDED = { 236: 944, 157: 628, 315: 1260 };
+  const expected = G10_RECORDED[r.G10.rows];
+  record('G10', '**`n ≤ 512` は破れている（既知・未修正）**',
+    expected === undefined ? '(この格子の記録が無い)' : `記録値 ${expected}（> 512）`,
+    String(r.G10.max),
+    expected === undefined ? null : r.G10.max === expected,
+    `帯は d ∈ (1, 1.0301]、うち d ∈ (1, 1.0164] は ${expected} で一定。`
+    + ` §4.6 の ΔE00 表では深度 512 で 2.439 / 1024 で 5.476（予算 3.0）なので、この帯は予算の外。`
+    + ` **出荷経路からは到達不能**（\`setDimLevel\` は DEV フックからしか呼ばれない）。`);
 
-  // ---- Phase 2b ----
+  // ---- Phase 2b（予算は 2c-v で 0.5% → 0.2% に引き直した）----
   //
-  // **予算 0.5% の根拠。** 機構（G14 が同定した fp16 の 0 方向切り捨て）の最悪値は
-  // 深度 16 で 1 フラグメントあたり `16 · 2⁻¹¹ ≈ 0.78%`、重ね合わせの差はその 2 倍まで
-  // ありうるので上限は 3.1% である。しかしそれは全フラグメントの切り捨てが
-  // 敵対的に揃った場合で、予算に据えると**何も落とせない**。
-  // §4.6 が `d = 0` で見たような**系統的**な機構（−5.2%）はこれよりはるかに大きく出るので、
-  // 0.5% は「落とせるが、丸めでは落ちない」ところに置いてある。
+  // **予算 0.2% は機構から導いた数ではない。今日の床のまわりに引いた経験的な柵である。**
+  // §0.1 規律 4 に従い、機構の側と柵の側を分けて書く。
+  //
+  // ## 機構が言えること（代数と `blendModel` の実行）
+  //
+  // G14 が同定した fp16 の 0 方向切り捨て（RTZ）の 1 段あたりの相対欠損は、仮数が 10 bit なので
+  // 上限 **`2⁻¹⁰` = 0.0977%**（`2⁻¹¹` は**最近接**の unit roundoff で RTZ には使えない ──
+  // 実測の 1 段最悪は 0.0974% で `2⁻¹¹` = 0.0488% を超える）。項が非負なら部分和は単調なので
+  // `E ≤ n·ulp(T)`、`Δ = E(A) + E(B) − E(A+B)` で 3 項とも同符号（≥ 0）だから
+  //
+  //     |Δ| / T(A+B) ≤ n · ulp(T)/T ≤ n · 2⁻¹⁰          （深度 16 で 1.5625%）
+  //
+  // **「その 2 倍」ではない。** `E(A)+E(B)` が最大になる側と `E(A+B)` が最大になる側は
+  // 同時に起きない。2b はここに「`16·2⁻¹¹ ≈ 0.78%` の 2 倍で上限 3.1%」と書いていたが、
+  // **上限に `2⁻¹¹` を使ったのと 2 倍を二重に掛けたのと、誤りが 2 つあって打ち消し合っていた**
+  // （どちらの読み方でも 1.5625% になる ── 算術としては偶然）。
+  // なお採点している `dev` の分母は `T` ではなく `I(A+B) = S(A+B)` なので、
+  // 実際の上界は `n·2⁻¹⁰ / (1 − n·2⁻¹⁰)`（深度 16 で 1.5873%）である。
+  //
+  // ## その 1.5625% は予算に使えない
+  //
+  // 全フラグメントの切り捨てが敵対的に揃った場合の値で、`blendModel` で構成すると深度 16 で
+  // 実際に **1.44%（上界の 93%）** に届く ── 上界が緩いのではなく、**そこに置くと何も落とせない**。
+  // 無作為な入力では上界の 3〜23% にしか届かない。
+  //
+  // ## だから 0.2% は柵である（根拠は実測だけ）
+  //
+  //   - 標本 No.0・2c-iv 時点: d=3 **0.0141%** / d=4 **0.0138%** / d=5 **0.0130%**
+  //   - 同じ機体・同じ標本の 2b 時点: 0.0211% / 0.0202% / 0.0184%
+  //     ── **コード状態だけで 1.5 倍動いた。床は機体定数ではない**
+  //   - 標本を替えた実測（深度 16 のまま）: 一様グレー **0.0000%**、市松 0/255 **−0.0527%**、
+  //     暗い画像 0.0003%、飽和した色ノイズ −0.0018%、明暗の勾配 0.0059%
+  //
+  // 柵は観測された最大 0.0527% の **3.8 倍**の位置にある。**余裕は大きくない。**
+  // しかも欠損は零平均の雑音ではなく値の決定的な関数なので、**フラグメント数では均されない**
+  // （同じフラグメントを 1 万個並べても `dev` は 1 個のときと 1 ビットも変わらない）。
+  // → 未知の標本でここが赤くなったら、欠陥の証拠ではなく**柵を引き直す合図**でありうる。
+  //
+  // **両側で見る。** 切り捨ては片側にしか外れないが、`Δ` は差なので符号は片側ではない ──
+  // 代数でも上下ともに `n·2⁻¹⁰` まで構成でき（実測 +1.4423% / −1.4580%）、
+  // 実測でも標本によって符号が反転している。
+  //
+  // ## この行が見ないもの（2b の記述を訂正した）
+  //
+  // 2b は「一様な**乗法的**な欠損は現れない。切り捨てはほぼ乗法的なのでここはほぼ 0 を出す」と
+  // 書いていた。前半は正しいが、**後半は確かめていない一般化だった**。厳密に言えるのは
+  // **`B = A` なら `Δ = 0`** だけで、これは RTZ が 2 冪倍と可換（`S(2a) = 2S(a)`）だからである。
+  // **`B = 2A` では既に成り立たない**（`1 + 2` は 2 冪ではない。実測最大 2.39%）。
+  // → 捕まえられるのは飽和・非正規数の潰れ・クリップのような**非線形**な機構であり、
+  //   構造的に捕まえられないのは **image と mean が一致する画素**（一様グレー）だけである。
+  //   実測の「一様グレー 0.0000%」はまさにこの退化で、機構について何も言っていない。
   for (const g of r.G12 ?? []) {
-    record('G12', `d=${g.d} 積分光量の重ね合わせ（幾何固定・色場だけ差し替え）`, '|ずれ| ≤ 0.5%',
-      `${(g.dev * 100).toFixed(4)}%`, Math.abs(g.dev) <= 0.005,
+    record('G12', `d=${g.d} 積分光量の重ね合わせ（幾何固定・色場だけ差し替え）`, '|ずれ| ≤ 0.2%',
+      `${(g.dev * 100).toFixed(4)}%`, Math.abs(g.dev) <= 0.002,
       `I(A) ${g.Ia.toExponential(4)} / I(B) ${g.Ib.toExponential(4)}`
       + ` / I(A+B) ${g.Iab.toExponential(4)} / 深度 ${g.depth} / 点 ${g.points}`
       + ` / extent ${g.extent.join(',')}`);
@@ -1239,7 +1369,7 @@ async function measureZeroPhase(context) {
       const target = [r0 / n, g0 / n, b0 / n];
       const meas = centre.map((v) => srgbToLinear(v / 255));
       return {
-        buffer: buf, offset: off, spritePx: s.spritePx, depth: s.additionDepth,
+        buffer: buf, offset: off, spritePx: s.spritePx, depth: s.modelledAdditionDepth,
         uniqueMax, measCode: meas.map(linearToCode), targetCode: target.map(linearToCode),
         deltaE: deltaE2000Linear(P, meas, target), levelPct: 100 * (meas[1] / target[1] - 1),
       };
