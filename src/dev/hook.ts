@@ -221,8 +221,11 @@ export interface LensSceneReport {
   calibrated: boolean;
   /** 潰しの補正（Phase 1b）。`dimLevel = 2` で厳密に 1 */
   sampleWeight: number;
-  /** half-float に積まれる加算回数の見積もり（Phase 1b）。**点数ではない** */
-  additionDepth: number;
+  /**
+   * 加算回数の**モデル**（Phase 1b。名前は 2c-v で直した）。**点数でも測定でもない。**
+   * `d ≥ 2.25` では実測の最大を 2.3〜2.9 倍過小に見積もる ── GPU に数えさせた値とは別物である。
+   */
+  modelledAdditionDepth: number;
   /**
    * 5 軸 `[u, v, L, a, b]` が**この画像に存在するか**（Phase 1c・SPEC §2.2）。
    * 退化した軸は `extent` が 0 に固定される。

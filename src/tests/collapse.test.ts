@@ -25,7 +25,7 @@ import {
   F,
   K_SPRITE,
   MIN_CALIBRATED_S0,
-  additionDepth,
+  modelledAdditionDepth,
   analyticK,
   axisCoverage,
   collapseWeight,
@@ -342,7 +342,7 @@ describe('加算深度', () => {
    * 489 は ULTRA 格子の `cols`（489×326）であって、どの dimLevel の深度でもない。
    */
   it('2 次元格子の深度は π/4·kSprite² ≈ 11.6 のあたり（点数 89,208 ではない）', () => {
-    const n = additionDepth({
+    const n = modelledAdditionDepth({
       s0x: S0, s0y: S0, extentX: 1, extentY: 1, nx: 378, ny: 236, spritePx: SPRITE,
     });
     expect(n).toBeGreaterThan(8);
@@ -351,10 +351,10 @@ describe('加算深度', () => {
   });
 
   it('潰しきると点数そのものになる', () => {
-    expect(additionDepth({
+    expect(modelledAdditionDepth({
       s0x: S0, s0y: S0, extentX: 0, extentY: 0, nx: 512, ny: 1, spritePx: SPRITE,
     })).toBe(512);
-    expect(additionDepth({
+    expect(modelledAdditionDepth({
       s0x: S0, s0y: S0, extentX: 0, extentY: 0, nx: 378, ny: 236, spritePx: SPRITE,
     })).toBe(378 * 236);
   });
