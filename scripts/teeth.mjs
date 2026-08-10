@@ -108,6 +108,21 @@ const MUTATIONS = [
     file: 'src/core/framingEnvelope.ts',
     find: 'export const ENVELOPE_PHASES = 4096;',
     replace: 'export const ENVELOPE_PHASES = 16;' },
+
+  // ---- Phase 2c-iv（包絡の引き直しが止まる経路）----
+  //
+  // 2c-ii は引き直しを `if (dimChanged)` で囲っていた。`layout()` は `positions` 無しで
+  // `updateCamera(true)` を呼ぶので `cloudVisible === false` の枝で包絡を 0 にし、
+  // 直後の `update()` は `dimLevel` が動いていないので**二度と引き直さない**。
+  // `relayout()` は `engine.onResize` に配線されているので、**リサイズ 1 回で必ず踏む**。
+  // 実測（`d = 3` / 988×778）: 6.869252 → 直後 2.558621 → 300 秒かけて 6.044646。
+  //
+  // **既存の「600 フレーム回しても動かない」はこれを捕まえなかった** ── `setDimLevel` の
+  // あとに `layout()` を一度も呼ばないからである。噛むのは 2c-iv で足した 1 本だけになる。
+  { phase: '2c-iv', name: '包絡の引き直しに `dimChanged` の門を戻す（resize 1 回で包絡が消える）',
+    file: 'src/scene/lensScene.ts',
+    find: '      this.lastEnvelope = envelopeFor(',
+    replace: '      if (dimChanged) this.lastEnvelope = envelopeFor(' },
   { phase: '2b', name: 'fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）',
     file: 'src/image/blendModel.ts',
     find: '  return sign * Math.min(quantize(Math.abs(value), Math.floor), F16_MAX);',
