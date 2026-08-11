@@ -64,6 +64,7 @@
  *   npm run ladder                   フル（実 GPU・予算判定あり）
  *   npm run ladder -- --teeth        **ラダー自身の歯**（故障を注入して赤くなるか）
  *   npm run ladder -- --structural   構造回帰のみ（CI に載っている）
+ *   npm run ladder -- --teeth --budgets  **予算そのものに歯が在るかを数える**（Phase 2c-vi）
  *   npm run ladder -- --json         JSON も出す
  */
 
@@ -227,13 +228,42 @@ const args = process.argv.slice(2);
 const STRUCTURAL = args.includes('--structural');
 const AS_JSON = args.includes('--json');
 const TEETH = args.includes('--teeth');
+/** 予算そのものに歯が在るかを数える（`--teeth` と併用する） */
+const BUDGETS = args.includes('--budgets');
 
 let rows = [];
 let failures = 0;
 
-/** `ok === null` は「採点しない」。**通過にも失敗にも数えない** */
-function record(id, what, budget, measured, ok, note = '') {
-  rows.push({ id, what, budget, measured, ok, note });
+const CMP = {
+  le: (v, l) => v <= l, lt: (v, l) => v < l,
+  ge: (v, l) => v >= l, gt: (v, l) => v > l,
+};
+
+/**
+ * `ok === null` は「採点しない」。**通過にも失敗にも数えない**
+ *
+ * ## `gauge` —— 予算そのものを検査するための 7 番目の引数（Phase 2c-vi）
+ *
+ * `{ site, value, limit, dir }`。**数値の予算を持つ行にだけ**足す（真偽・厳密一致・
+ * `Object.is` の 43 行は 1 文字も変わらない）。`site` は**予算リテラルの識別子**であって
+ * 行の識別子ではない ── G12 の 3 行（d=3/4/5）は同じ `0.002` を共有するので同じ `site` になる。
+ * **検査の単位は行ではなく予算リテラルである。**
+ *
+ * `gauge` が `ok` と食い違ったら**その場で落とす**。これが無いと `gauge` は
+ * 「実際の判定式とずれた手書きの写し」になり、検査が自分の書いた表を読み返すだけの
+ * `x/x` に堕ちる ── だから `--budgets` のときだけでなく**全モードで毎回**検査する。
+ */
+function record(id, what, budget, measured, ok, note = '', gauge = null) {
+  if (gauge && ok !== null) {
+    const derived = CMP[gauge.dir](gauge.value, gauge.limit);
+    if (derived !== ok) {
+      throw new Error(
+        `gauge が ok と一致しない: ${id} / ${what} / site=${gauge.site}`
+        + ` value=${gauge.value} ${gauge.dir} limit=${gauge.limit} → ${derived}、ok=${ok}`,
+      );
+    }
+  }
+  rows.push({ id, what, budget, measured, ok, note, gauge });
   if (ok === false) failures++;
 }
 
@@ -285,7 +315,7 @@ async function main() {
     const gl = await page.evaluate(() => window.__LENS__.glInfo());
 
     if (TEETH) {
-      exitCode = await runTeeth(page, gl);
+      exitCode = await runTeeth(page, context, gl);
     } else {
       const buffer = await runOnce(page, context, {}, consoleErrors);
       report(gl, buffer);
@@ -412,7 +442,7 @@ async function runOnce(page, context, fault, consoleErrors) {
  * 特定できるからである。特定できるなら特定したほうが強い ── そうしないと
  * 「たまたま別の行が落ちていた」を成功と読む余地が残る。
  */
-async function runTeeth(page, gl) {
+async function runTeeth(page, context, gl) {
   const log = [];
   console.log('');
   console.log('  ラダーの歯の確認');
@@ -420,7 +450,11 @@ async function runTeeth(page, gl) {
   console.log('');
 
   rows = []; failures = 0;
-  await runOnce(page, null, { quick: true }, null);
+  // `--budgets` のときだけ素の状態を**非 quick** で回す ── 分母（全 `site`）を正直に数えるため。
+  // 故障側を非 quick で回すのは費用が見合わない（G16 の掃引だけで故障あたり 60 秒級）ので、
+  // 生成されない行は「検査外」として**明示して数に入れる**（分母を縮めて点を良く見せない）。
+  await runOnce(page, BUDGETS ? context : null, BUDGETS ? {} : { quick: true }, null);
+  const baseRows = rows.map((r) => ({ id: r.id, ok: r.ok, gauge: r.gauge }));
   const baseOk = failures === 0;
   console.log(`  素の状態: ${baseOk ? '緑 ✅' : `赤 ❌（${failures} 行）`}`);
   if (!baseOk) {
@@ -431,6 +465,8 @@ async function runTeeth(page, gl) {
   console.log('');
 
   let bitten = 0;
+  /** `--budgets` 用。**捨てていた行をそのまま持つだけ**なので、追加の測定は 1 回も要らない */
+  const faultRuns = [];
   for (const f of FAULTS) {
     rows = []; failures = 0;
     await runOnce(page, null, { [f.key]: true, quick: true }, null);
@@ -439,6 +475,11 @@ async function runTeeth(page, gl) {
     const ok = hit.length > 0;
     if (ok) bitten++;
     log.push({ ...f, ok, failedIds: [...failedIds] });
+    faultRuns.push({
+      fault: f,
+      failedIds,
+      rows: rows.map((r) => ({ id: r.id, ok: r.ok, gauge: r.gauge })),
+    });
     console.log(`  ${ok ? '✅' : '❌'} ${f.name}`);
     console.log(`     期待 ${f.expect.join('/')} → 落ちた行 ${[...failedIds].join('/') || '（無し）'}`);
   }
@@ -453,8 +494,106 @@ async function runTeeth(page, gl) {
     console.log('  抜けた歯がある。**ラダーがその故障を見ていない** ──');
     console.log('  G9 を 2 フェーズ腐らせたのと同じ形が、見張る道具の中に在る。');
   }
+  let budgetsOk = true;
+  if (BUDGETS) budgetsOk = reportBudgets(baseRows, faultRuns);
+
   if (AS_JSON) console.log('\nJSON\n' + JSON.stringify({ gl, log }, null, 2));
-  return bitten === FAULTS.length ? 0 : 1;
+  return bitten === FAULTS.length && budgetsOk ? 0 : 1;
+}
+
+/**
+ * **予算そのものに歯が在るかを数える**（`--teeth --budgets`・Phase 2c-vi）。
+ *
+ * ## なぜ要るのか
+ *
+ * 2c-v で、G12 の予算 0.2% には歯が 1 本も無かったことが分かった ── 既存の故障 `colorfield` は
+ * `dev ≈ −100%` を出すので **0.5% でも 0.2% でも同じように赤く**、その数字を 0% から 100% まで
+ * どこへ動かしても全テストが緑だった。1 本だけ塞いだが、**残りが何本あるかは誰も数えていなかった。**
+ *
+ * `scripts/teeth.mjs` の台帳は `src/` しか書き換えないので、`scripts/` に在る予算リテラルは
+ * **構造的にあちらでは守れない**。ここが唯一の場所である。
+ *
+ * ## 判定
+ *
+ * 予算 `site`（上限 `L`）に歯が在るのは、次を満たす故障が在るときに限る:
+ *
+ *   1. その故障のもとで `site` の行が落ちる
+ *   2. **その id で落ちたのがその行だけ**である ── `expect` は `id` 単位なので、
+ *      同じ id の別の行が同時に落ちると、`L` を動かしても gate は色を変えない
+ *   3. 比 `m`（`le`/`lt` なら `value/L`、`ge`/`gt` なら `L/value`）が `1 < m ≤ K` に入る ──
+ *      **桁で外す故障は予算を検証していない**（`colorfield` の m ≈ 500 はここで落ちる）
+ *
+ * ## この検査が言えないこと（正直に）
+ *
+ * 「`L` を動かすと色が変わるか」しか見ない。**`L` が機構から導かれた数か、
+ * 今日の床のまわりに引いた柵か**は判定できない（G12 の 0.2% は後者だと `score()` 自身が書いている）。
+ * そこは人が書くしかない。
+ */
+const BUDGET_NEAR_K = 3;
+/** **減ったら赤**。増えたらここを上げてから通す（`teeth.mjs` の `observed` と同じ規律） */
+const EXPECTED_TOOTHED_BUDGETS = 6;
+
+function reportBudgets(baseRows, faultRuns) {
+  const sites = new Map();
+  for (const r of baseRows) {
+    if (!r.gauge) continue;
+    if (!sites.has(r.gauge.site)) sites.set(r.gauge.site, { ...r.gauge, best: null, blocked: [] });
+  }
+  for (const run of faultRuns) {
+    // その走行で id ごとに何行落ちたか（条件 2 のため）
+    const failedPerId = new Map();
+    for (const r of run.rows) {
+      if (r.ok === false) failedPerId.set(r.id, (failedPerId.get(r.id) ?? 0) + 1);
+    }
+    for (const r of run.rows) {
+      if (!r.gauge || r.ok !== false) continue;
+      const s = sites.get(r.gauge.site);
+      if (!s) continue;
+      const { value, limit, dir } = r.gauge;
+      const m = dir === 'le' || dir === 'lt'
+        ? (limit > 0 ? value / limit : Infinity)
+        : (value > 0 ? limit / value : Infinity);
+      const alone = (failedPerId.get(r.id) ?? 0) === 1;
+      const cand = { fault: run.fault.key, value, m, alone };
+      if (!alone) { s.blocked.push(cand); continue; }
+      if (m > 1 && m <= BUDGET_NEAR_K && (!s.best || m < s.best.m)) s.best = cand;
+      else if (!s.best) s.blocked.push(cand);
+    }
+  }
+
+  console.log('');
+  console.log(`  予算の歯（--budgets・K = ${BUDGET_NEAR_K}）`);
+  console.log('');
+  console.log('  site               上限        最も近い故障   その値      比      判定');
+  console.log('  ' + '-'.repeat(78));
+  let toothed = 0;
+  const rowsOut = [...sites.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  for (const [site, s] of rowsOut) {
+    let verdict;
+    if (s.best) { toothed++; verdict = s.best.m < 1.1 ? '歯が在る ⚠ 余裕僅少' : '歯が在る'; }
+    else if (s.blocked.length) {
+      const b = s.blocked.reduce((x, y) => (x.m < y.m ? x : y));
+      verdict = !b.alone ? '**歯が無い**（同 id の別行と同時に落ちる）' : '**歯が無い**（桁で外す）';
+    } else verdict = '**歯が無い**（覆う故障が無い）';
+    const b = s.best ?? (s.blocked.length ? s.blocked.reduce((x, y) => (x.m < y.m ? x : y)) : null);
+    console.log(
+      `  ${site.padEnd(18)} ${String(s.limit).padEnd(11)} ${(b?.fault ?? '（無し）').padEnd(14)}`
+      + ` ${(b ? b.value.toPrecision(5) : '—').padEnd(11)} ${(b ? b.m.toFixed(2) : '—').padEnd(7)} ${verdict}`,
+    );
+  }
+  console.log('  ' + '-'.repeat(78));
+  console.log(`  歯の在る予算 ${toothed} / ${sites.size}。**歯の無い予算 ${sites.size - toothed}。**`);
+  const ok = toothed >= EXPECTED_TOOTHED_BUDGETS;
+  if (!ok) {
+    console.log('');
+    console.log(`  ❌ 歯の在る予算が ${EXPECTED_TOOTHED_BUDGETS} を下回った。`);
+    console.log('  予算に歯が無いということは、**その数字を緩い方へ動かしても誰も気づかない**ということである。');
+  }
+  console.log('');
+  console.log('  **この検査の外に在る行**: `--teeth` は `quick: true` で回すので、');
+  console.log('  G1d / G11a / G11b / G9z / G12 の d=4,5 / コンソールエラーは故障側で生成されない。');
+  console.log('  そこに在る予算は、故障を足さないかぎり永久に検査外である。');
+  return ok;
 }
 
 /** ページ内で走る測定本体。**`fault` はここで絵と採点者に効く** */
@@ -1091,35 +1230,42 @@ function score(r, fault) {
     Math.abs(r.G1.fill.x - 0.86) < 1e-9);
   const worstMarker = Math.max(...r.G1.markers.map((m) => m.err));
   record('G1', '基準点の重心誤差（白マーカー 5 個）', '≤ 2 device px', worstMarker.toFixed(3),
-    worstMarker <= 2, r.G1.markers.map((m) => m.err.toFixed(2)).join(' / '));
+    worstMarker <= 2, r.G1.markers.map((m) => m.err.toFixed(2)).join(' / '),
+    { site: 'G1/marker', value: worstMarker, limit: 2, dir: 'le' });
   if (r.G1d) {
     record('G1', '二面体 8 変換で区別がつく', `${r.G1d.pairs}/${r.G1d.pairs} 対で相違`,
       `${r.G1d.distinct}/${r.G1d.pairs}`, r.G1d.distinct === r.G1d.pairs);
   }
   for (const path of ['plate', 'cloud']) {
     record('G2a', `平坦部（${path}）`, 'ΔE00 ≤ 2.0', r['G2a_' + path].deltaE.toFixed(4),
-      r['G2a_' + path].deltaE <= 2.0);
+      r['G2a_' + path].deltaE <= 2.0, '',
+      { site: 'G2a/deltaE', value: r['G2a_' + path].deltaE, limit: 2.0, dir: 'le' });
     const g3 = r['G3_' + path];
     record('G3', `ランプ 8 段（${path}）`, 'ΔE00 ≤ 2.0',
       g3.measurable ? g3.worstDeltaE.toFixed(4) : '測れない（窓が空）',
       g3.measurable && g3.worstDeltaE <= 2.0,
-      `codes ${g3.codes.join(',')} / 窓 y∈[${g3.window[0]},${g3.window[1]}] / スプライト半径 ${g3.radImage} 画像px`);
+      `codes ${g3.codes.join(',')} / 窓 y∈[${g3.window[0]},${g3.window[1]}] / スプライト半径 ${g3.radImage} 画像px`,
+      g3.measurable ? { site: 'G3/deltaE', value: g3.worstDeltaE, limit: 2.0, dir: 'le' } : null);
     record('G3', `ランプの単調性（${path}）`, '厳密に単調増加', String(g3.monotone), g3.monotone);
     const g4 = r['G4_' + path];
     record('G4', `ホイール 24（${path}）`, 'ΔE00 ≤ 2.0', g4.worstDeltaE.toFixed(4),
-      g4.worstDeltaE <= 2.0);
+      g4.worstDeltaE <= 2.0, '',
+      { site: 'G4/wheelDeltaE', value: g4.worstDeltaE, limit: 2.0, dir: 'le' });
     record('G4', `平均色相残差（${path}）`, '≤ 0.5°',
       `${g4.meanHueDeg.toFixed(4)}° (sd ${g4.sdHueDeg.toFixed(3)}°)`,
-      Math.abs(g4.meanHueDeg) <= 0.5);
+      Math.abs(g4.meanHueDeg) <= 0.5, '',
+      { site: 'G4/hueDeg', value: Math.abs(g4.meanHueDeg), limit: 0.5, dir: 'le' });
   }
   record('G2c', '板経路と雲経路が別の画素である', '> 0 バイト相違',
     `${r.G2c.diffBytes} / ${r.G2c.totalBytes} バイト`, r.G2c.diffBytes > 0,
     '同じ絵を 2 回測って 2 つのゲートと呼んでいないか');
   record('G2b', '実効ゲイン（雲）', '±2%', `${r.G2b.errPct.toFixed(3)}%`,
-    Math.abs(r.G2b.errPct) <= 2);
+    Math.abs(r.G2b.errPct) <= 2, '',
+    { site: 'G2b/errPct', value: Math.abs(r.G2b.errPct), limit: 2, dir: 'le' });
   if (r.G5) {
     record('G5', '板の拡大補間', 'sRGB 188', String(r.G5.code),
-      Math.abs(r.G5.code - 188) <= 1, `生値 ${r.G5.raw}`);
+      Math.abs(r.G5.code - 188) <= 1, `生値 ${r.G5.raw}`,
+      { site: 'G5/code', value: Math.abs(r.G5.code - 188), limit: 1, dir: 'le' });
   }
   record('G6', 'オフで再現する（同じ画素）', '画素一致', String(r.G6.repeatable), r.G6.repeatable);
   record('G6', 'CompressPass の恒等性（強度 0）', `0 / ${r.G6.totalBytes} バイト相違`,
@@ -1132,12 +1278,15 @@ function score(r, fault) {
     const g = c[key];
     const premise = g.rowSpread <= 1;
     record(id, `${label}: 位相モデルの前提（上下 2 行の一致）`, '≤ 1 コード',
-      String(g.rowSpread), premise);
+      String(g.rowSpread), premise, '',
+      { site: 'G8G9/rowSpread', value: g.rowSpread, limit: 1, dir: 'le' });
     record(id, `${label}（再構成した中心値）`, `ΔE00 ≤ ${budget}`, g.deltaE.toFixed(4),
       premise && g.deltaE <= budget,
       `生 ${g.measuredCode.join(',')} → ${g.reconCode.join(',')} / 目標 ${g.targetCode.join(',')}`
       + ` / 位相 ${g.phase.toFixed(6)} / 水準 ${g.levelPct.toFixed(2)}%`
-      + ` / 深度 ${g.depth} / 点 ${g.linePoints}`);
+      + ` / 深度 ${g.depth} / 点 ${g.linePoints}`,
+      // **前提が偽のときは予算の話にならない**ので gauge を出さない
+      premise ? { site: `${id}/deltaE`, value: g.deltaE, limit: budget, dir: 'le' } : null);
   };
   collapseRow('G8a', 'd1', 'd=1 列平均線', 2.0);
   collapseRow('G8b', 'd0.5', 'd=0.5 線', 2.0);
@@ -1229,7 +1378,8 @@ function score(r, fault) {
       `${(g.dev * 100).toFixed(4)}%`, Math.abs(g.dev) <= 0.002,
       `I(A) ${g.Ia.toExponential(4)} / I(B) ${g.Ib.toExponential(4)}`
       + ` / I(A+B) ${g.Iab.toExponential(4)} / 深度 ${g.depth} / 点 ${g.points}`
-      + ` / extent ${g.extent.join(',')}`);
+      + ` / extent ${g.extent.join(',')}`,
+      { site: 'G12/dev', value: Math.abs(g.dev), limit: 0.002, dir: 'le' });
   }
   if (r.G13) {
     record('G13', '光過敏の配慮: オンで画素が動かない', '60 フレームで画素一致',
@@ -1284,10 +1434,12 @@ function score(r, fault) {
     record('G15', '配線ありで HDR の峰が 1.0 以下（**位相 0**）', '≤ 1.0',
       r.G15.peakWired.toFixed(5),
       r.G15.peakWired <= 1.0,
-      `配線なしなら ${r.G15.peakOff.toFixed(5)} —— 位相を流したときは G16 が見る`);
+      `配線なしなら ${r.G15.peakOff.toFixed(5)} —— 位相を流したときは G16 が見る`,
+      { site: 'G15/peakWired', value: r.G15.peakWired, limit: 1.0, dir: 'le' });
     record('G15', '配線なしでは峰が 1.0 を超えている（圧縮する物が実在する）', '> 1.0',
       r.G15.peakOff.toFixed(5), r.G15.peakOff > 1.0,
-      '超えていないなら、この配線は何も主張していない');
+      '超えていないなら、この配線は何も主張していない',
+      { site: 'G15/peakOff', value: r.G15.peakOff, limit: 1.0, dir: 'gt' });
   }
   if (r.G16) {
     const g = r.G16;
@@ -1296,18 +1448,22 @@ function score(r, fault) {
       `> ${g.recordedEnvelope}`, g.rawPeak.toFixed(5),
       g.rawPeak > g.recordedEnvelope,
       `記録値の ${(g.rawPeak / g.recordedEnvelope).toFixed(1)} 倍`
-        + ` / fill.x ${g.fillX.toFixed(4)} / カメラ距離 ${g.cameraDistance.toFixed(3)}`);
+        + ` / fill.x ${g.fillX.toFixed(4)} / カメラ距離 ${g.cameraDistance.toFixed(3)}`,
+      { site: 'G16/rawPeak', value: g.rawPeak, limit: g.recordedEnvelope, dir: 'gt' });
     // 2. **本命。** 圧縮は上限 `knee + 1/s = 1` の全単射なので、峰がいくつでもクリップしない。
     //    2b の設計（有限の設計峰）ではここが 1.026 になり落ちる
     record('G16', '**配線ありで峰が 1.0 未満（位相を流しても）**', '< 1.0',
       g.wiredPeak.toFixed(5), g.wiredPeak < 1.0,
       `強度 ${g.strength.toFixed(4)} / 生の峰 ${g.rawPeak.toFixed(2)} —— `
-        + '有限の設計峰から逆算する設計では上限が 1.026 になり、ここが落ちる');
+        + '有限の設計峰から逆算する設計では上限が 1.026 になり、ここが落ちる',
+      { site: 'G16/wiredPeak', value: g.wiredPeak, limit: 1.0, dir: 'lt' });
   }
   if (r.G11) {
-    record('G11a', '帯からのはみ出し', '≤ 1.00', r.G11.maxFill.toFixed(4), r.G11.maxFill <= 1.0);
+    record('G11a', '帯からのはみ出し', '≤ 1.00', r.G11.maxFill.toFixed(4), r.G11.maxFill <= 1.0,
+      '', { site: 'G11a/maxFill', value: r.G11.maxFill, limit: 1.0, dir: 'le' });
     record('G11b', '近平面の余裕', '≥ 0.25 world', r.G11.minMargin.toFixed(4),
-      r.G11.minMargin >= 0.25);
+      r.G11.minMargin >= 0.25, '',
+      { site: 'G11b/minMargin', value: r.G11.minMargin, limit: 0.25, dir: 'ge' });
   }
   void fault;
 }
@@ -1383,7 +1539,8 @@ async function measureZeroPhase(context) {
     record('G9z', 'd=0 平均色（**モデルを通さない生値**）', 'ΔE00 ≤ 3.0', r.deltaE.toFixed(4),
       odd && r.deltaE <= 3.0,
       `生 ${r.measCode.join(',')} / 目標 ${r.targetCode.join(',')}`
-      + ` / 水準 ${r.levelPct.toFixed(2)}% / S ${r.spritePx.toFixed(3)} / 深度 ${r.depth}`);
+      + ` / 水準 ${r.levelPct.toFixed(2)}% / S ${r.spritePx.toFixed(3)} / 深度 ${r.depth}`,
+      odd ? { site: 'G9z/deltaE', value: r.deltaE, limit: 3.0, dir: 'le' } : null);
     zeroPhaseRaw = r;
   } finally {
     await page.close();
