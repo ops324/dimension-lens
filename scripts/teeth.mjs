@@ -58,18 +58,18 @@ const MUTATIONS = [
   // つまり「bloom の閾値を守る歯」ではなく「移植ファイルが書き換わったことを検出する歯」に
   // なってしまう（`x/x` の一種）。だから 2b は定数を `core/bloom.ts` /
   // `core/compress.ts` へ出し、そちらを壊す。
-  { phase: '2b', name: 'bloom の閾値を d=0 の平均色の下へ下げる（G9 の測定点が bloom の内側へ入る）',
+  { phase: '2b', name: 'bloom の閾値を d=0 の平均色の下へ下げる（G9 の測定点が bloom の内側へ入る）', observed: 3,
     file: 'src/core/bloom.ts',
     find: 'export const BLOOM_BASE_THRESHOLD = 0.28;',
     replace: 'export const BLOOM_BASE_THRESHOLD = 0.26;' },
-  { phase: '2b', name: '輝度の重みを等分に取り違える（別の量に対する柵になる）',
+  { phase: '2b', name: '輝度の重みを等分に取り違える（別の量に対する柵になる）', observed: 2,
     file: 'src/core/bloom.ts',
     find: 'export const LUMA_WEIGHTS: readonly [number, number, number] = [0.2126, 0.7152, 0.0722];',
     replace: 'export const LUMA_WEIGHTS: readonly [number, number, number] = [1 / 3, 1 / 3, 1 / 3];' },
-  { phase: '2b', name: 'ニーを平均色の下へ動かす（錨が後処理で動きうる位置へ）',
+  { phase: '2b', name: 'ニーを平均色の下へ動かす（錨が後処理で動きうる位置へ）', observed: 6,
     file: 'src/core/compress.ts',
     find: 'export const COMPRESS_KNEE = 0.8;', replace: 'export const COMPRESS_KNEE = 0.2;' },
-  { phase: '2b', name: '圧縮の強度から門を外す（アンカー窓で圧縮が立ち上がる）',
+  { phase: '2b', name: '圧縮の強度から門を外す（アンカー窓で圧縮が立ち上がる）', observed: 2,
     file: 'src/core/compress.ts',
     find: '  return rotationGate(dimLevel) * COMPRESS_MAX_STRENGTH;',
     replace: '  return COMPRESS_MAX_STRENGTH;' },
@@ -79,13 +79,13 @@ const MUTATIONS = [
   // 2b の設計（実測の包絡に余裕を掛けて強度を逆算する）は、余裕を何倍にしても
   // 上限 `knee + 1/s` が 1 を超えるためクリップを消せない ── その設計へ**戻す**変異を
   // 歯にする。`compress.test.ts` の「1/(1−knee) である」と half-float 全域の 2 本が噛む。
-  { phase: '2c', name: '強度を「設計峰からの逆算」へ戻す（有限の峰では上限が 1 を超える）',
+  { phase: '2c', name: '強度を「設計峰からの逆算」へ戻す（有限の峰では上限が 1 を超える）', observed: 6,
     file: 'src/core/compress.ts',
     find: 'export const COMPRESS_MAX_STRENGTH = 1 / (1 - COMPRESS_KNEE);',
     replace: 'export const COMPRESS_MAX_STRENGTH = strengthForPeak(MEASURED_PEAK_ENVELOPE * 1.25);' },
   // ニーの値そのもの。2b までこれを留めるテストが 1 本も無く、「代償を記録する」つもりの
   // テストが副作用で ±0.15% だけ固定していた（監査が逆算）。2c で独立した柵を置いた。
-  { phase: '2c', name: 'ニーを 0.9 へ動かす（2b では 11 本すべてが素通しした変異）',
+  { phase: '2c', name: 'ニーを 0.9 へ動かす（2b では 11 本すべてが素通しした変異）', observed: 3,
     file: 'src/core/compress.ts',
     find: 'export const COMPRESS_KNEE = 0.8;', replace: 'export const COMPRESS_KNEE = 0.9;' },
 
@@ -94,17 +94,17 @@ const MUTATIONS = [
   // 包絡は「絵を良くする」ためではなく「構図を経過時間の関数でなくする」ために在る。
   // 配線を外しても `framingEnvelope.ts` の単体テストは全部緑のままなので、
   // **配線そのものを見る歯**が要る（`framingEnvelope.test.ts` の「1800 フレーム」）。
-  { phase: '2c', name: '包絡を配線から外す（構図がまた経過時間の関数へ戻る）',
+  { phase: '2c', name: '包絡を配線から外す（構図がまた経過時間の関数へ戻る）', observed: 5,
     file: 'src/scene/lensScene.ts',
     find: '    const framed = unionSpread(spread, target);',
     replace: '    const framed = unionSpread(spread, spread);' },
   // 門を外すと、板の重み 0.9976 のところでカメラが 2.41 倍跳ぶ ── 写真が突然 41% に縮む
-  { phase: '2c', name: '包絡から門を外す（窓の縁で写真が突然縮む）',
+  { phase: '2c', name: '包絡から門を外す（窓の縁で写真が突然縮む）', observed: 3,
     file: 'src/scene/lensScene.ts',
     find: '    const g = cloudW > 1 ? 1 : cloudW;',
     replace: '    const g = 1;' },
   // 掃く位相を減らすと包絡が包絡でなくなる（掃いていない位相が外へ出る）
-  { phase: '2c', name: '掃く位相を 4096 → 16 に減らす（包絡が包絡でなくなる）',
+  { phase: '2c', name: '掃く位相を 4096 → 16 に減らす（包絡が包絡でなくなる）', observed: 5,
     file: 'src/core/framingEnvelope.ts',
     find: 'export const ENVELOPE_PHASES = 4096;',
     replace: 'export const ENVELOPE_PHASES = 16;' },
@@ -119,7 +119,7 @@ const MUTATIONS = [
   //
   // **既存の「600 フレーム回しても動かない」はこれを捕まえなかった** ── `setDimLevel` の
   // あとに `layout()` を一度も呼ばないからである。噛むのは 2c-iv で足した 1 本だけになる。
-  { phase: '2c-iv', name: '包絡の引き直しに `dimChanged` の門を戻す（resize 1 回で包絡が消える）',
+  { phase: '2c-iv', name: '包絡の引き直しに `dimChanged` の門を戻す（resize 1 回で包絡が消える）', observed: 4,
     file: 'src/scene/lensScene.ts',
     find: '      this.lastEnvelope = envelopeFor(',
     replace: '      if (dimChanged) this.lastEnvelope = envelopeFor(' },
@@ -133,19 +133,26 @@ const MUTATIONS = [
   // 台帳が書き換えるのは `src/` の実装であって、テストの掃引を狭めて赤くなるのを見ても
   // 「テストがテストを検出した」にしかならない（`vendor.test.ts` の sha256 と同じ型）。
   // 掃引が狭まったことの検出は `EXPECTED_SWEEPS`（国勢調査）が引き受ける。
-  { phase: '2c-vii', name: '包絡を門で入れるのをやめる（傾斜帯でホールドが育たなくなる）',
-    file: 'src/scene/lensScene.ts',
-    find: '    const g = cloudW > 1 ? 1 : cloudW;',
-    replace: '    const g = 1;' },
-  { phase: '2c-vii', name: '位相の掃きを 1 本にする（包絡が位相 0 の値へ戻る = 2c-i が落とした偽）',
+  // **ホールドの単調性を外す。** 傾斜帯でホールドが育つのは `framingHold` が
+  // 単調非減少だからで、そこを外すと帯の後退が消える（＝ 呼吸に戻る）。
+  //
+  // 当初ここには「`const g = 1;`（包絡を門で入れるのをやめる）」を置いたが、
+  // **それは 2c の「包絡から門を外す」と file / find / replace が 1 文字も違わない複製**
+  // だった ── 歯の本数を 49 → 53 に見せかけるだけで、新しく守るものが無い。
+  // **台帳の本数はラチェットなので、複製は型 1 の再演そのものである。** 差し替えた。
+  { phase: '2c-vii', name: 'ホールドの単調性を外す（傾斜帯の後退が消えて呼吸に戻る）',
+    file: 'src/core/fit.ts',
+    find: '  return need > previous ? need : previous;',
+    replace: '  return need;' },
+  { phase: '2c-vii', name: '位相の掃きを 1 本にする（包絡が位相 0 の値へ戻る = 2c-i が落とした偽）', observed: 7,
     file: 'src/core/framingEnvelope.ts',
     find: 'export const ENVELOPE_PHASES = 4096;',
     replace: 'export const ENVELOPE_PHASES = 1;' },
-  { phase: '2c-vii', name: '門の傾斜幅を潰す（窓の外がいきなり全開になる = 帯が消える）',
+  { phase: '2c-vii', name: '門の傾斜幅を潰す（窓の外がいきなり全開になる = 帯が消える）', observed: 5,
     file: 'src/render/rotationSchedule.ts',
     find: 'export const GATE_RAMP = 0.35;',
     replace: 'export const GATE_RAMP = 1e-6;' },
-  { phase: '2c-vii', name: '畳みを止めて格子の行数を深度から切り離す（n ≤ 512 の標本依存が消える）',
+  { phase: '2c-vii', name: '畳みを止めて格子の行数を深度から切り離す（n ≤ 512 の標本依存が消える）', observed: 1,
     file: 'src/image/columnLine.ts',
     find: '  const n = Math.round(extentX * max);\n  return n < 1 ? 1 : n > max ? max : n;',
     replace: '  return max > 512 ? 512 : max;' },
@@ -156,38 +163,38 @@ const MUTATIONS = [
   // ときしか走らないので、`d = 0` を一度通ってから `d = 3` へ戻ると 1 のまま居座り、
   // 「そのフレームで実際に描いている線の点数」という説明に対して嘘になる。
   // **`survival.test.ts` がこれを 900 セル中 5 セルとして検出した変異そのものである。**
-  { phase: '2c-vi', name: '描いていない線の点数を漏らす（キャッシュが観測面へ出る）',
+  { phase: '2c-vi', name: '描いていない線の点数を漏らす（キャッシュが観測面へ出る）', observed: 2,
     file: 'src/scene/lensScene.ts',
     find: '      linePoints: grid ? 0 : this.linePoints,',
     replace: '      linePoints: this.linePoints,' },
-  { phase: '2b', name: 'fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）',
+  { phase: '2b', name: 'fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）', observed: 7,
     file: 'src/image/blendModel.ts',
     find: '  return sign * Math.min(quantize(Math.abs(value), Math.floor), F16_MAX);',
     replace: '  return sign * Math.min(quantize(Math.abs(value), Math.round), F16_MAX);' },
-  { phase: '2b', name: '最近接偶数を「常に上へ」にする（ties-to-even を落とす）',
+  { phase: '2b', name: '最近接偶数を「常に上へ」にする（ties-to-even を落とす）', observed: 2,
     file: 'src/image/blendModel.ts',
     find: '  return floor % 2 === 0 ? floor : floor + 1;',
     replace: '  return floor + 1;' },
-  { phase: '2b', name: '二値ケースの暗い側を正規数にする（非正規域を問わなくなる）',
+  { phase: '2b', name: '二値ケースの暗い側を正規数にする（非正規域を問わなくなる）', observed: 1,
     file: 'src/image/blendModel.ts',
     find: '  const dark = binaryContribution(30);',
     replace: '  const dark = binaryContribution(130);' },
-  { phase: '2b', name: '判定の許容を最小の分離幅より広げる（2 モデルが同時に一致する）',
+  { phase: '2b', name: '判定の許容を最小の分離幅より広げる（2 モデルが同時に一致する）', observed: 1,
     file: 'src/image/blendModel.ts',
     find: '  tolerance = 1e-6,', replace: '  tolerance = 1e-2,' },
-  { phase: '2b', name: '光過敏の配慮が回転へ届かない（2a まで実際にこうだった）',
+  { phase: '2b', name: '光過敏の配慮が回転へ届かない（2a まで実際にこうだった）', observed: 2,
     file: 'src/scene/lensScene.ts',
     find: '    if (!this.frozen && !this.reducedMotion) advancePhases(this.phases, d, dt);',
     replace: '    if (!this.frozen) advancePhases(this.phases, d, dt);' },
-  { phase: '2b', name: '配慮を測定用の凍結と共用する（測定が終わると配慮が解ける）',
+  { phase: '2b', name: '配慮を測定用の凍結と共用する（測定が終わると配慮が解ける）', observed: 2,
     file: 'src/scene/lensScene.ts',
     find: '  setReducedMotion(on: boolean): void {\n    this.reducedMotion = on;\n  }',
     replace: '  setReducedMotion(on: boolean): void {\n    this.frozen = on;\n  }' },
-  { phase: '2b', name: '色場 `image+mean` を恒等にする（G12 が同じ絵を 2 回測る）',
+  { phase: '2b', name: '色場 `image+mean` を恒等にする（G12 が同じ絵を 2 回測る）', observed: 1,
     file: 'src/scene/lensScene.ts',
     find: "        const base = field === 'mean' ? 0 : 1;",
     replace: "        const base = field === 'mean' ? 0 : 1; if (field !== 'mean') { dst[i] = src[i]; dst[i + 1] = src[i + 1]; dst[i + 2] = src[i + 2]; continue; }" },
-  { phase: '2b', name: '色場の差し替えが位置も触る（幾何固定という前提を壊す）',
+  { phase: '2b', name: '色場の差し替えが位置も触る（幾何固定という前提を壊す）', observed: 1,
     file: 'src/scene/lensScene.ts',
     find: '  setColorField(mode: ColorField): void {\n    if (mode === this.colorField) return;',
     replace: '  setColorField(mode: ColorField): void {\n    this.points.positions[0] += 1e-3;\n    if (mode === this.colorField) return;' },
@@ -196,32 +203,32 @@ const MUTATIONS = [
   //
   // G9 の −17.58% は 2 つの因子の積だった。**node で採点できるのはその「割り方」**で、
   // 実際に読める値は `npm run ladder` が実 GPU で見る。ここで守るのは前者だけである。
-  { phase: '2a', name: '中心の位相を常に 0 にする（＝ 図の中心にフラグメントが在ると仮定する）',
+  { phase: '2a', name: '中心の位相を常に 0 にする（＝ 図の中心にフラグメントが在ると仮定する）', observed: 2,
     file: 'src/image/spriteGain.ts',
     find: '    return Math.abs(c - (Math.floor(c) + 0.5));',
     replace: '    return 0;' },
-  { phase: '2a', name: '位相減衰を恒等にする（1c まで暗黙にそう扱っていた）',
+  { phase: '2a', name: '位相減衰を恒等にする（1c まで暗黙にそう扱っていた）', observed: 4,
     file: 'src/image/spriteGain.ts',
     find: '  const r2 = (offsetX * offsetX + offsetY * offsetY) / (spritePx * spritePx);\n  return Math.exp(-F * r2);',
     replace: '  void offsetX; void offsetY;\n  return 1;' },
-  { phase: '2a', name: '位相の減衰に F を使わない（k を取り違える）',
+  { phase: '2a', name: '位相の減衰に F を使わない（k を取り違える）', observed: 4,
     file: 'src/image/spriteGain.ts',
     find: '  return Math.exp(-F * r2);', replace: '  return Math.exp(-K_SPRITE * r2);' },
-  { phase: '2a', name: '潰れた軸を畳まない（1b の挙動へ戻す = 深度 378）',
+  { phase: '2a', name: '潰れた軸を畳まない（1b の挙動へ戻す = 深度 378）', observed: 1,
     file: 'src/image/columnLine.ts',
     find: '  const n = Math.round(extentX * max);\n  return n < 1 ? 1 : n > max ? max : n;',
     replace: '  return max;' },
-  { phase: '2a', name: '畳んだ点数の下限を 0 にする（1 点すら描かなくなる）',
+  { phase: '2a', name: '畳んだ点数の下限を 0 にする（1 点すら描かなくなる）', observed: 2,
     file: 'src/image/columnLine.ts',
     find: '  if (!(extentX > 0)) return 1;', replace: '  if (!(extentX > 0)) return 0;' },
-  { phase: '2a', name: 'half-float の非正規数を 0 に潰す（暗い列が消えたことを観測できなくする）',
+  { phase: '2a', name: 'half-float の非正規数を 0 に潰す（暗い列が消えたことを観測できなくする）', observed: 1,
     file: 'src/core/capture.ts',
     find: '  if (e === 0) return s * m * 2 ** -24;', replace: '  if (e === 0) return 0;' },
-  { phase: '2a', name: '潰しの基準を無限格子へ戻す（アンカーの厳密 1 がティア依存に戻る）',
+  { phase: '2a', name: '潰しの基準を無限格子へ戻す（アンカーの厳密 1 がティア依存に戻る）', observed: 1,
     file: 'src/image/spriteGain.ts',
     find: '    axisCoverage(c.s0x, c.refNx ?? AXIS_UNBOUNDED, c.spritePx)\n    * axisCoverage(c.s0y, c.refNy ?? AXIS_UNBOUNDED, c.spritePx);',
     replace: '    axisCoverage(c.s0x, AXIS_UNBOUNDED, c.spritePx)\n    * axisCoverage(c.s0y, AXIS_UNBOUNDED, c.spritePx);' },
-  { phase: '2a', name: 'HDR 自己検査の値を 1.0 以下にする（1.0 超を区別する口の意味が消える）',
+  { phase: '2a', name: 'HDR 自己検査の値を 1.0 以下にする（1.0 超を区別する口の意味が消える）', observed: 1,
     file: 'src/core/capture.ts',
     find: 'export const HDR_SELFTEST_VALUE: readonly [number, number, number] = [2.5, 0.25, 0.0625];',
     replace: 'export const HDR_SELFTEST_VALUE: readonly [number, number, number] = [0.5, 0.25, 0.0625];' },

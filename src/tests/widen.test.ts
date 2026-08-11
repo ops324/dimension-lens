@@ -9,11 +9,14 @@
  * | 演算子 | `npm test` の費用（このホスト・2 回計測） | 新しく赤になった主張 |
  * |---|---|---|
  * | 刻みを 4 倍細かく（`--density`） | 監査の実測で 4.29s → **45.9s（10.7 倍）** | **0 本 / 19 本** |
- * | **1 点の軸を全域へ広げる（この節）** | **6.23 / 6.60s → 23.24 / 21.73s（約 3.5 倍）** | **3 本** |
+ * | **1 点の軸を全域へ広げる（この節）** | **6.23 / 6.60s → 12.28 / 10.64s（約 1.8 倍）** | **3 本** |
  *
- * 内訳（`widen.test.ts` 単体で 18.4s のうち）: ランプ帯 1500F × 9 点が **12.9s**、
- * 包絡 21 スロット × 100 位相が **2.9s**、`layout()` 掃引が **1.8s**、国勢調査が 0.02s。
- * **費用の 70% はランプ帯の反復軸**で、そこがいちばん大きい発見を出している。
+ * 内訳: 包絡 21 スロット × 100 位相 **2.9s** / `layout()` 掃引 **1.8s** /
+ * ランプ帯 1500F × 9 点 **3.3s**（軽い格子。HIGH なら 14.2s）/ 国勢調査 0.02s。
+ *
+ * **`npm test` の 1 秒は `npm run teeth` では 53 秒になる。** 変異 53 本を 1 本ずつ
+ * 試す仕組みなので、ここでの 1 秒が向こうで 1 分近くになる ──
+ * **`npm test` 単体の費用だけを見て「載せられる」と判断してはいけない。**
  *
  * 理由は §7.10 の型 2 の 6 件を見れば分かる ── 「位相 0 の HDR」はデータ表、
  * 「候補 32」「位相 4096」「600 フレーム」「G9 の 2 フェーズ」は**反復回数**、
@@ -186,6 +189,40 @@ function buildScene(): LensScene {
   });
 }
 
+/**
+ * **測定用の軽い格子**（`framing.test.ts` と同じ 20,000 点）。
+ *
+ * 反復軸の掃引は 9 点 × 1500 フレームなので、点数がそのまま費用になる。
+ * **軽くしても現象は残ることを先に測った**（1500F・`d = 2.25` の後退）:
+ *
+ * | 格子 | 費用 | 最悪 | 育った点 |
+ * |---|---|---|---|
+ * | HIGH 89,304 | 14.24s | ×1.082658 | 下側 1・上側 4 |
+ * | **軽 20,000** | **3.25s** | **×1.082529**（差 0.012%） | 下側 1・上側 4 |
+ * | 軽 8,000 | 1.52s | ×1.080196（差 0.23%） | 下側 1・上側 4 |
+ *
+ * **`npm test` の 1 秒は `npm run teeth` では 53 秒になる**（変異 53 本 × 1 回ずつ）。
+ * ここを HIGH のままにすると teeth への寄与だけで 11.4 分 ── 費用の 7 割が 1 本に乗る。
+ * 包絡の行は `framingEnvelope.test.ts` と数字を突き合わせる必要があるので HIGH のまま。
+ */
+const lightGrid = fitGrid(canonical.width, canonical.height, 20_000);
+const lightLifted = makeLiftPayload(canonical, lightGrid, scales);
+
+function buildLightScene(): LensScene {
+  return new LensScene({
+    grid: lightGrid,
+    base: lightLifted.base,
+    colors: lightLifted.colors,
+    columnMeans: stats.columnMeans,
+    scales,
+    width: canonical.width,
+    height: canonical.height,
+    gamut: canonical.gamut,
+    maxNorm: lightLifted.maxNorm,
+    plate: null,
+  });
+}
+
 describe('軸を広げる（型 2）', () => {
   /**
    * ## 包絡は 21 スロット中 2 つで実際に超えられる
@@ -333,7 +370,7 @@ describe('軸を広げる（型 2）', () => {
    *     `d = 1.25 / 1.50` の **×1.0004**。実際の最悪は **×1.4035**
    *   - **18000 フレームでも足りない。** `d = 2.375` の初動は 27554F（459 秒）
    *
-   * ここでは **1500 フレーム**で切る（9 点で約 13 秒）。飽和まで回すと 36000F × 9 点で
+   * ここでは **1500 フレーム**で切る（軽い格子で 9 点 3.3 秒）。飽和まで回すと 36000F × 9 点で
    * 約 5 分になり `npm test` に載らない。**切った結果、見えている量は飽和より小さい。**
    * **900F では下側が 1 点も育たず赤くなった**（下側の初動は最速で `d = 1.75` の 1327F）──
    * 「両側で育つ」という主張には、下側の初動を跨ぐ反復数が要る。
@@ -350,7 +387,7 @@ describe('軸を広げる（型 2）', () => {
     let worstAt = '';
     const grew: string[] = [];
     for (const d of RAMP) {
-      const scene = buildScene();
+      const scene = buildLightScene();
       scene.setDimLevel(d);
       scene.update(1 / 60);
       const d0 = scene.stats().cameraDistance;
@@ -372,12 +409,12 @@ describe('軸を広げる（型 2）', () => {
    * 既存の 2 本が測っている 1 点は、実際に 1 ビットも動かない。
    * **既存のテストが嘘だったのではなく、題が掃引より広かった。**
    */
-  it('対照: d = 3 は 900 フレーム回しても 1 ビットも動かない', () => {
-    const scene = buildScene();
+  it('対照: d = 3 は 1500 フレーム回しても 1 ビットも動かない', () => {
+    const scene = buildLightScene();
     scene.setDimLevel(3);
     scene.update(1 / 60);
     const d0 = scene.stats().cameraDistance;
-    for (let i = 0; i < 900; i++) scene.update(1 / 60);
+    for (let i = 0; i < 1500; i++) scene.update(1 / 60);
     expect(Object.is(scene.stats().cameraDistance, d0)).toBe(true);
   }, 30_000);
 });
