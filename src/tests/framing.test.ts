@@ -188,6 +188,9 @@ describe('投影後の図が帯に収まる（標本 No.0・全 dimLevel・位�
   const cascadeDist = safeDist(maxNorm);
   const { aX, aY } = imageHalfExtents(SPECIMEN_W, SPECIMEN_H);
 
+  /** 投影後の点群（毎回確保しない） */
+  const projected = new Float32Array(count * 3);
+
   /** その dimLevel・その位相での投影後の広がり */
   function spreadAt(d: number, phases: Float64Array): { aX: number; aY: number; zHi: number } {
     const angles = createAngleBuffer();
@@ -198,21 +201,57 @@ describe('投影後の図が帯に収まる（標本 No.0・全 dimLevel・位�
     for (let k = 0; k < 5; k++) ext[k] = clamp01(d - k);
     composeRotN(angles, 5, m);
     foldExtent(m, 5, ext);
-    const out = new Float32Array(count * 3);
-    liftProject5(base, count, m, cascadeDist, out);
+    liftProject5(base, count, m, cascadeDist, projected);
     let mx = 0;
     let my = 0;
     let zh = Number.NEGATIVE_INFINITY;
     for (let v = 0; v < count; v++) {
-      const x = Math.abs(out[v * 3]);
-      const y = Math.abs(out[v * 3 + 1]);
-      const z = out[v * 3 + 2];
+      const x = Math.abs(projected[v * 3]);
+      const y = Math.abs(projected[v * 3 + 1]);
+      const z = projected[v * 3 + 2];
       if (x > mx) mx = x;
       if (y > my) my = y;
       if (z > zh) zh = z;
     }
     return { aX: mx, aY: my, zHi: zh > 0 ? zh : 0 };
   }
+
+  /**
+   * ## **「帯を割らない」は測定ではなく定理だった**（Phase 2c-vii で直した）
+   *
+   * 2c-vi まで、この節は `expect(worstFill).toBeLessThanOrEqual(1)` を採点にしていた。
+   * **それは恒真である。**
+   *
+   * ```
+   * need   = zHi + fitDistance(aX, aY)          （needDistance の定義）
+   * held  ≥ need                                 （framingHold は need を下回らない）
+   * ndc.x  = aX / ((held − zHi)·t·aspect)
+   *        ≤ aX / (fitDistance(aX, aY)·t·aspect)
+   *        = DEFAULT_FILL                        （fitDistance の定義そのもの）
+   * ```
+   *
+   * **実測（Phase 2c-vii）**: `spread` を一様乱数にして 50 万点通しても
+   * `max(f.x, f.y)` の最大は **0.860000000000000431**、`held = need` のときは
+   * **200,000 / 200,000 点で厳密に `DEFAULT_FILL`**。
+   * → **`spreadAt()` が何を返そうと、掃引がどれだけ粗かろうと、この行は赤くならなかった。**
+   * このファイルの冒頭が `fillRatios` について告発している穴を、
+   * `ndcExtents(needDistance(…))` という形で再演していた。
+   *
+   * **点ごとに割る形に直しても消えない**（2c-vii で試して測った）。任意の点 `p` について
+   * `held − p.z ≥ held − zHi ≥ fitDistance(aX,aY)` かつ `|p.x| ≤ aX` なので、
+   * 点ごとの ndc も同じ上界に入る ── 実測でも 4 viewport すべてで
+   * 要約・点ごとの両方が厳密に **0.86000000**（違いが出るのは距離を人工的に縮めたときだけで、
+   * ×0.90 で要約 1.02312199 / 点ごと 0.98633827）。
+   * **約分は要約のせいではなく、距離を「採点する広がり自身」から作っていることのせいである。**
+   *
+   * → **不等式をやめて、恒等式として留める。** こう書けば歯が在る:
+   * `fitDistance` と `ndcExtents` の関係が壊れたら（半角変換の `/360` → `/180`、
+   * `DEFAULT_FILL` の変更、`needDistance` の `zHi` の扱いの変更）**厳密一致が破れる**。
+   *
+   * **本当の「帯に収まる」は、出荷経路のカメラ距離で採点しなければ言えない** ──
+   * それは `framingEnvelope.test.ts` が `LensScene.stats()` で見ている。
+   * ここで掃引が効いているのは、下の**近平面余裕**のほうだけである。
+   */
 
   const VIEWPORTS: Array<[number, number, string]> = [
     [1.2699, 1, '1a-iii の実測 viewport'],
@@ -227,6 +266,8 @@ describe('投影後の図が帯に収まる（標本 No.0・全 dimLevel・位�
       const anchor = needDistance(input, plateSpread(aX, aY));
       let worstFill = 0;
       let worstAt = '';
+      let worstNear = Number.POSITIVE_INFINITY;
+      let nearAt = '';
       for (let d = 0; d <= 5.0001; d += 0.25) {
         const phases = createPhases();
         // dimLevel を動かした直後の位相から、40 秒ぶんを掃く
@@ -246,12 +287,17 @@ describe('投影後の図が帯に収まる（標本 No.0・全 dimLevel・位�
             worstFill = worst;
             worstAt = `d=${d.toFixed(2)} step=${step}`;
           }
-          // カメラの手前に点が来ない（`gl_PointSize` の分母が潰れない）
-          expect(held - spread.zHi, `${name} ${worstAt} で近平面`).toBeGreaterThan(0.25);
+          // **ここが掃引に依存する唯一の量。** カメラの手前に点が来ない
+          //（`gl_PointSize` の分母が潰れない）
+          if (held - spread.zHi < worstNear) {
+            worstNear = held - spread.zHi;
+            nearAt = `d=${d.toFixed(2)} step=${step}`;
+          }
         }
       }
-      // 帯を割らない。ホールドは単調非減少なので、掃いた範囲では 1 度も超えない
-      expect(worstFill, `最悪 ${worstAt} で ${worstFill.toFixed(4)}`).toBeLessThanOrEqual(1);
+      // **恒等式として留める**（上の注記）。不等式 `≤ 1` は恒真で歯が無かった
+      expect(worstFill, `最悪 ${worstAt} で ${worstFill}`).toBeCloseTo(DEFAULT_FILL, 12);
+      expect(worstNear, `近平面の最悪 ${nearAt} で ${worstNear}`).toBeGreaterThan(0.25);
     });
   }
 

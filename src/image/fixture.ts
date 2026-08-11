@@ -166,3 +166,76 @@ export function makeGrayscaleRamp(w = 64, h = 40): Specimen {
   }
   return { width: w, height: h, rgba };
 }
+
+/**
+ * 色相スイープ。**普通のアスペクトで、ノルム分布の上が平らになりにくい**標本。
+ *
+ * `x` で色相を一周、`y` で明度を振る。1px の黒枠を置く（標本 No.0 と同じ理由 ──
+ * 枠が `|E·x|` の上位を占めるので、候補選抜の挙動を No.0 と比較できる）。
+ */
+export function makeHueSweep(w = 1024, h = 640): Specimen {
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  const lin = new Float64Array(3);
+  for (let y = 0; y < h; y++) {
+    const L = h > 1 ? 0.35 + (y / (h - 1)) * 0.45 : 0.65;
+    for (let x = 0; x < w; x++) {
+      const hue = (x / w) * Math.PI * 2;
+      oklabToLinear(SRGB, L, 0.08 * Math.cos(hue), 0.08 * Math.sin(hue), lin);
+      const o = (y * w + x) * 4;
+      rgba[o] = linearToCode(lin[0]);
+      rgba[o + 1] = linearToCode(lin[1]);
+      rgba[o + 2] = linearToCode(lin[2]);
+      rgba[o + 3] = 255;
+    }
+  }
+  if (h > 2) {
+    fill(rgba, w, 0, 0, w, 1, 0, 0, 0);
+    fill(rgba, w, 0, h - 1, w, 1, 0, 0, 0);
+    fill(rgba, w, 0, 0, 1, h, 0, 0, 0);
+    fill(rgba, w, w - 1, 0, 1, h, 0, 0, 0);
+  }
+  return { width: w, height: h, rgba };
+}
+
+/**
+ * **極端に横長**（既定 1024×64）。格子の `rows` が小さくなるので、
+ * `4 × rows` で決まる加算深度も、包絡の候補選抜も No.0 とは別の枝に入る。
+ */
+export function makeWideStrip(w = 1024, h = 64): Specimen {
+  return makeHueSweep(w, h);
+}
+
+/**
+ * **1 行画像**（既定 1024×1）。`rows = 1` の退化。列平均線と格子が一致し、
+ * `|E·x|` の上位が事実上すべて同値になる（ノルム分布の上が完全に平ら）。
+ */
+export function makeSingleRow(w = 1024): Specimen {
+  return makeHueSweep(w, 1);
+}
+
+/**
+ * ## 標本の台帳（Phase 2c-vii で足した）
+ *
+ * **`framingEnvelope.ts` は「1024×64 横長」「1024×1 1 行」「1024×640 色相スイープ」で
+ * 測った数字を表として載せているが、その 3 標本は repo に 1 バイトも無かった。**
+ * 過去の作業セッションでその場で作られ、**数字だけが残っていた** ──
+ * だから誰もその表を検算できなかった。監査 B が「同名の標本を作ると 4/1001・−0.971%、
+ * 主張は 46/1001・−4.49%」と報告したのは、**別物を測ったから**である。
+ *
+ * これが型 3 の正体だった。**標本が 1 枚しかないのではなく、複数枚あるように書かれていた。**
+ *
+ * → 標本を実装して台帳に載せる。**引用値は台帳の ID と寸法で指す。**
+ * `framingEnvelope.ts` の古い表の数字は**復元できない**ので、
+ * この台帳で測り直した値に置き換える（SPEC §7.10 に経緯を書いた）。
+ *
+ * **台帳の歯**: `specimen.test.ts` が「標本間で散らない観測量が在ること」ではなく
+ * 「**散る観測量が在ること**」を要求する ── 台帳を 1 枚に戻すと比が厳密に 1 になって赤くなる。
+ */
+export const SPECIMEN_LEDGER = [
+  { id: 'No.0', w: SPECIMEN_W, h: SPECIMEN_H, make: () => makeSpecimen0(), note: '生成色票（起動時の標本）' },
+  { id: 'gray', w: 64, h: 40, make: () => makeGrayscaleRamp(), note: 'グレースケール勾配（彩度が退化）' },
+  { id: 'mono', w: 64, h: 40, make: () => makeMonochrome(), note: '単色（明度も彩度も退化）' },
+  { id: 'hue', w: 1024, h: 640, make: () => makeHueSweep(), note: '色相スイープ（普通のアスペクト）' },
+  { id: 'wide', w: 1024, h: 64, make: () => makeWideStrip(), note: '極端に横長（rows が小さい）' },
+  { id: 'row1', w: 1024, h: 1, make: () => makeSingleRow(), note: '1 行画像（rows = 1 の退化）' },
+] as const;
