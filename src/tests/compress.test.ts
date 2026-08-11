@@ -27,7 +27,7 @@ import {
   compressStrengthFor,
   strengthForPeak,
 } from '../core/compress';
-import { ANCHOR_MAX, ANCHOR_MIN } from '../render/rotationSchedule';
+import { ANCHOR_MAX, ANCHOR_MIN, GATE_RAMP } from '../render/rotationSchedule';
 import { srgbToLinear } from '../color/srgb';
 
 /** `d = 0` の目標リニア輝度（`bloom.test.ts` と同じ値。SPEC §8 が記録している） */
@@ -138,14 +138,54 @@ describe('出荷経路の配線', () => {
    * **窓の縁で跳ねないこと。** `d = 2` では 0.8 を超える画素が 6 万個ある（白マーカーと
    * ランプの上端）ので、強度が窓の縁で 0 → 4.4 へ飛ぶと**白がストンと落ちて見える**。
    * `rotationGate` は `smoothstep` なので C¹ ── 速度も 0 から始まる。
+   *
+   * ## **予算を刻みの関数にしてはいけない**（Phase 2c-vii で直した）
+   *
+   * 2c-vi まで、ここは「刻み 0.005 での最大隣接差 < 0.12」だった。
+   * **予算 0.12 は刻み 0.005 の性質であって、関数の性質ではない。** 実測:
+   *
+   * | 刻み h | 最大隣接差 | 予算 0.12 比 | `差 / h` |
+   * |---|---|---|---|
+   * | 0.02（4 倍粗い） | 0.42775510 | **356.5% ❌ 赤** | 21.387755 |
+   * | **0.005（2c-vi）** | 0.10711370 | **89.3%（余裕 12%）** | 21.422741 |
+   * | 0.00125（4 倍細かい） | 0.02678526 | 22.3% | 21.428207 |
+   * | 0.000078125（64 倍） | 0.00167411 | 1.4% | 21.428570 |
+   *
+   * → **掃引を細かくすると検査が自動的に緩む。** 型 2 の機構（掃引の密度を上げる）を
+   * 入れた瞬間に、この 1 本だけは**逆向きに働いて 4 倍緩くなる**。
+   * しかも 2c-vi の時点で予算まで 11% しか余裕が無く、刻みを 4 倍粗くするだけで赤だった。
+   *
+   * **刻み非依存な形は代数で厳密に出る。** `f(d) = A(d)·S` で `A = smoothstep(beyond/RAMP)`、
+   * `sup|smoothstep'| = 3/2` なので
+   *
+   * ```
+   * sup|f'| = COMPRESS_MAX_STRENGTH · (3/2) / GATE_RAMP = 5 × 1.5 / 0.35 = 21.428571…
+   * ```
+   *
+   * 実測の `差/h` はこの値へ**上から**収束する（21.428570 @ h = 1/12800）。
+   * → **差ではなく `差/h` に柵を置く。** これなら刻みを変えても意味が変わらない。
    */
-  it('窓の縁から連続に立ち上がる（隣り合う刻みの差が小さい）', () => {
-    let worst = 0;
-    for (let d = 0; d <= 5; d += 0.005) {
-      worst = Math.max(worst, Math.abs(compressStrengthFor(d + 0.005) - compressStrengthFor(d)));
+  it('窓の縁から連続に立ち上がる（傾きの上限。刻みに依らない）', () => {
+    /** 代数の上限。`GATE_RAMP` か `COMPRESS_MAX_STRENGTH` を動かせばここが動く */
+    const SUP_SLOPE = (COMPRESS_MAX_STRENGTH * 1.5) / GATE_RAMP;
+    expect(SUP_SLOPE).toBeCloseTo(21.428571428571427, 12);
+
+    // 刻みを 3 桁ぶん変えても、`差/h` は上限を超えず、上限へ収束する
+    let coarsest = 0;
+    for (const h of [0.02, 0.005, 0.00125, 0.0003125]) {
+      let worst = 0;
+      for (let d = 0; d <= 5; d += h) {
+        worst = Math.max(worst, Math.abs(compressStrengthFor(d + h) - compressStrengthFor(d)));
+      }
+      const slope = worst / h;
+      // 平均変化率は sup|f'| を超えない（平均値の定理）
+      expect(slope, `h=${h} で 差/h=${slope}`).toBeLessThanOrEqual(SUP_SLOPE);
+      // そして上限から 0.2% 以内 ── 「なめらか」が刻みの粗さで作られていないこと
+      expect(slope, `h=${h} で 差/h=${slope}`).toBeGreaterThan(SUP_SLOPE * 0.998);
+      if (h === 0.02) coarsest = slope;
     }
-    // 門は 0.35 の幅で 0→1 なので、0.005 刻みの最大差は 1.5·s·(0.005/0.35) 程度
-    expect(worst).toBeLessThan(0.12);
+    // 4 倍粗い刻みでも同じ傾きが出る（＝ この柵は掃引の密度に依存しない）
+    expect(coarsest).toBeCloseTo(21.387755102040817, 9);
   });
 
   it('有限でない dimLevel では 0（NaN を強度に流さない）', () => {

@@ -124,6 +124,32 @@ const MUTATIONS = [
     find: '      this.lastEnvelope = envelopeFor(',
     replace: '      if (dimChanged) this.lastEnvelope = envelopeFor(' },
 
+  // ---- Phase 2c-vii（掃引と標本を広げる機構）----
+  //
+  // **機構にも歯を付ける。** `widen.test.ts` / `specimen.test.ts` が「広げたから見えた」と
+  // 言っているものを、実装側から消してみて、本当にそれを見ているかを確かめる。
+  //
+  // **`widen.test.ts` の掃引そのもの（刻み・反復数）はここでは変異させない** ──
+  // 台帳が書き換えるのは `src/` の実装であって、テストの掃引を狭めて赤くなるのを見ても
+  // 「テストがテストを検出した」にしかならない（`vendor.test.ts` の sha256 と同じ型）。
+  // 掃引が狭まったことの検出は `EXPECTED_SWEEPS`（国勢調査）が引き受ける。
+  { phase: '2c-vii', name: '包絡を門で入れるのをやめる（傾斜帯でホールドが育たなくなる）',
+    file: 'src/scene/lensScene.ts',
+    find: '    const g = cloudW > 1 ? 1 : cloudW;',
+    replace: '    const g = 1;' },
+  { phase: '2c-vii', name: '位相の掃きを 1 本にする（包絡が位相 0 の値へ戻る = 2c-i が落とした偽）',
+    file: 'src/core/framingEnvelope.ts',
+    find: 'export const ENVELOPE_PHASES = 4096;',
+    replace: 'export const ENVELOPE_PHASES = 1;' },
+  { phase: '2c-vii', name: '門の傾斜幅を潰す（窓の外がいきなり全開になる = 帯が消える）',
+    file: 'src/render/rotationSchedule.ts',
+    find: 'export const GATE_RAMP = 0.35;',
+    replace: 'export const GATE_RAMP = 1e-6;' },
+  { phase: '2c-vii', name: '畳みを止めて格子の行数を深度から切り離す（n ≤ 512 の標本依存が消える）',
+    file: 'src/image/columnLine.ts',
+    find: '  const n = Math.round(extentX * max);\n  return n < 1 ? 1 : n > max ? max : n;',
+    replace: '  return max > 512 ? 512 : max;' },
+
   // ---- Phase 2c-vi（配線の生存の行列）----
   //
   // 線を描いていないフレームで線バッファの最後の状態を漏らす。`rebuildLine` は `!grid` の
