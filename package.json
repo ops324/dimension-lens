@@ -15,7 +15,8 @@
     "bench": "vitest bench --run",
     "ladder": "node scripts/ladder.mjs",
     "ladder:teeth": "node scripts/ladder.mjs --teeth",
-    "gecko": "node scripts/gecko.mjs"
+    "gecko": "node scripts/gecko.mjs",
+    "ladder:budgets": "node scripts/ladder.mjs --teeth --budgets"
   },
   "dependencies": {
     "three": "0.185.1"
