@@ -123,6 +123,17 @@ const MUTATIONS = [
     file: 'src/scene/lensScene.ts',
     find: '      this.lastEnvelope = envelopeFor(',
     replace: '      if (dimChanged) this.lastEnvelope = envelopeFor(' },
+
+  // ---- Phase 2c-vi（配線の生存の行列）----
+  //
+  // 線を描いていないフレームで線バッファの最後の状態を漏らす。`rebuildLine` は `!grid` の
+  // ときしか走らないので、`d = 0` を一度通ってから `d = 3` へ戻ると 1 のまま居座り、
+  // 「そのフレームで実際に描いている線の点数」という説明に対して嘘になる。
+  // **`survival.test.ts` がこれを 900 セル中 5 セルとして検出した変異そのものである。**
+  { phase: '2c-vi', name: '描いていない線の点数を漏らす（キャッシュが観測面へ出る）',
+    file: 'src/scene/lensScene.ts',
+    find: '      linePoints: grid ? 0 : this.linePoints,',
+    replace: '      linePoints: this.linePoints,' },
   { phase: '2b', name: 'fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）',
     file: 'src/image/blendModel.ts',
     find: '  return sign * Math.min(quantize(Math.abs(value), Math.floor), F16_MAX);',

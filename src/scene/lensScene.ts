@@ -144,7 +144,10 @@ export interface LensSceneStats {
   pointCount: number;
   /** 列平均バッファの**上限**点数 */
   lineCount: number;
-  /** そのフレームで実際に描いている線の点数（Phase 2 の `effectiveLineCount`） */
+  /**
+   * そのフレームで実際に描いている線の点数（Phase 2 の `effectiveLineCount`）。
+   * **格子を描くフレームでは 0**（Phase 2c-vi。それまでは線バッファの最後の状態が漏れていた）。
+   */
   linePoints: number;
   /** セル 1 個あたりの device px */
   s0: number;
@@ -796,8 +799,20 @@ export class LensScene {
       gridH: this.source.grid.rows,
       pointCount: grid ? this.source.grid.cols * this.source.grid.rows : this.linePoints,
       lineCount: this.lineCount,
-      // 実際に描いている線の点数（Phase 2）。`lineCount` は上限、こちらが実数
-      linePoints: this.linePoints,
+      /**
+       * 実際に描いている線の点数（Phase 2）。`lineCount` は上限、こちらが実数。
+       *
+       * **格子を描くフレームでは 0 である**（Phase 2c-vi で直した）。それまでは
+       * `this.linePoints` を素で返しており、**線を描いていないフレームでも
+       * 線バッファの最後の状態が漏れていた** ── `rebuildLine` は `!grid` のときしか
+       * 走らないので、`d = 0` を一度通ってから `d = 3` へ戻ると 1 のまま居座る。
+       * 「そのフレームで実際に描いている線の点数」という説明に対して**嘘になる**。
+       *
+       * `survival.test.ts`（配線の生存の行列）が 900 セル中 5 セルとしてこれを検出した。
+       * 絵には影響しない ── キャッシュの状態が観測面へ漏れていただけである。
+       * ラダーが読むのは `d ≤ 1`（線を実際に描く帯）だけなので、あちらの数は動かない。
+       */
+      linePoints: grid ? 0 : this.linePoints,
       s0: cfg.s0,
       spritePx: cfg.spritePx,
       gain: cfg.gain,
