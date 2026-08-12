@@ -11,8 +11,23 @@ permissions:
   pages: write
   id-token: write
 
+# **ref ごとに分ける**（Phase 2c-viii で実測）。
+#
+# もとは `group: pages` で、**ref が入っていなかった** ── 全 run が 1 つのグループを
+# 共有するので、**別のブランチを push しただけで走行中の run が cancel される。**
+# 実測: #37 の run（22:20:13 開始）は `npm run teeth` の途中 22:25:01 に落ち、
+# #38 の run が始まったのは **22:24:48** ── 13 秒後に消された。
+#
+# **これは「赤いが中身が無い」である。** `gh pr checks` は `fail` と表示するが
+# conclusion は `cancelled` で、**ゲートは走っていない**。テストが落ちたのと
+# 見分けがつかない形で、`npm run teeth`（7〜20 分）が丸ごと飛ぶ。
+# 履歴を見ると **2c-vii でも 2 本が cancelled のまま**だった（31529963065 / 31530207696）──
+# **実装 PR と文書 PR を分ける運用（§8）は、この設定と組み合わさると必ず踏む。**
+#
+# `deploy` は `main` への push のときだけ走るので、ref を鍵に入れても
+# Pages のデプロイは `pages-refs/heads/main` で直列のままである。
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
