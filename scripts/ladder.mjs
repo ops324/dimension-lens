@@ -532,6 +532,20 @@ async function runTeeth(page, context, gl) {
 const BUDGET_NEAR_K = 3;
 /** **減ったら赤**。増えたらここを上げてから通す（`teeth.mjs` の `observed` と同じ規律） */
 const EXPECTED_TOOTHED_BUDGETS = 6;
+/**
+ * **分母のラチェット**（Phase 2c-viii）。
+ *
+ * 2c-vi は分子（`toothed`）だけを見ていた。**そこに穴が在る** ── `sites` は
+ * `gauge` を持つ行からしか作られないので、**歯の無い 13 site の `gauge` を消すと
+ * `6 / 19` が `6 / 6` になり、判定は `true` のまま通る。**
+ * 独立監査が実物の `reportBudgets` を切り出して実演し、こちらでも実機で 19 を確認した
+ * （ANGLE Metal・988×778・`--teeth --budgets`）。
+ *
+ * **指標が証拠を消すほど良くなるのは、指標の側の欠陥である。**
+ * `gauge` を外すのは「その数字はもう予算ではない」という主張なので、
+ * 減らすならこの数も同じ PR で下げること ── 差分に出る。
+ */
+const EXPECTED_BUDGET_SITES = 19;
 
 function reportBudgets(baseRows, faultRuns) {
   const sites = new Map();
@@ -583,11 +597,21 @@ function reportBudgets(baseRows, faultRuns) {
   }
   console.log('  ' + '-'.repeat(78));
   console.log(`  歯の在る予算 ${toothed} / ${sites.size}。**歯の無い予算 ${sites.size - toothed}。**`);
-  const ok = toothed >= EXPECTED_TOOTHED_BUDGETS;
-  if (!ok) {
+  const enough = toothed >= EXPECTED_TOOTHED_BUDGETS;
+  // **分母も見る**（2c-viii）── 見ないと、歯の無い site の `gauge` を消すだけで
+  // 「6 / 19」が「6 / 6」になり、証拠を消した側が緑になる。
+  const denomOk = sites.size >= EXPECTED_BUDGET_SITES;
+  const ok = enough && denomOk;
+  if (!enough) {
     console.log('');
     console.log(`  ❌ 歯の在る予算が ${EXPECTED_TOOTHED_BUDGETS} を下回った。`);
     console.log('  予算に歯が無いということは、**その数字を緩い方へ動かしても誰も気づかない**ということである。');
+  }
+  if (!denomOk) {
+    console.log('');
+    console.log(`  ❌ 予算の site が ${sites.size} しかない（${EXPECTED_BUDGET_SITES} あったはず）。`);
+    console.log('  `gauge` を外すと分母が縮み、**歯の無い予算を消すほど比が良くなる。**');
+    console.log('  正当に減らしたのなら、この PR の中で EXPECTED_BUDGET_SITES も下げること。');
   }
   console.log('');
   console.log('  **この検査の外に在る行**: `--teeth` は `quick: true` で回すので、');

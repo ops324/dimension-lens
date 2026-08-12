@@ -22,10 +22,31 @@
  *
  * ## 何を主張するか
  *
- * 各変異について「**少なくとも 1 件のテストが落ちる**」ことだけを hard gate にする。
- * 落ちた件数も記録して、**前より減っていたら警告**する ── 件数が減るのは
- * 「テストが恒等に潰れ始めた」の早期兆候だが、リファクタで正当に減ることもあるので
- * 落とさずに出す。ゼロになったら落とす。
+ * 各変異について「**少なくとも 1 件のテストが落ちる**」ことと、
+ * **落ちた件数が台帳の `observed` を下回らない**ことを hard gate にする。
+ *
+ * ## 「減ったら警告だけ」は Phase 2c-viii で撤回した（実測で決めた）
+ *
+ * 2b からここは「件数が減るのはテストが恒等に潰れ始めた早期兆候だが、リファクタで
+ * 正当に減ることもあるので**落とさずに出す**」と書いていた。**その設計に穴が在る。**
+ *
+ * 実演（2c-viii・独立監査が発見し、こちらでも再現した）── `survival.test.ts` の
+ * `CASES` から 2 枚目の標本を消す。あの行に付いているコメントは
+ * 「**2c-iv の教訓: 標本を 1 枚しか通さない測定は「測った」と書けない**」である:
+ *
+ * ```
+ * 削除前: npm test 431 緑 / teeth『2c-iv』→ 4 件・噛んだ 1     EXIT=0
+ * 削除後: npm test 430 緑 / teeth『2c-iv』→ 3 件・弱った 1     EXIT=0  ← CI は緑
+ * ```
+ *
+ * **教訓そのものを撤回しても、7 点の品質ゲートが 1 つも赤くならない。**
+ * 警告は CI のログに 1 行出るだけで、終了コードは 0 だった。
+ *
+ * → `failed < observed` を**落ちる**ようにした。正当なリファクタで減った場合の道は
+ * 塞いでいない ── **その PR の中で `observed` を下げる**（差分に出るので査読で見える）。
+ * 「ログの 1 行」と「台帳の差分」の違いがこの変更の全部である。
+ * **人が数字を下げれば通る形なのは認める**（§7.10 の型 1 と同じ弱点）。
+ * 変えたのは通りやすさではなく、**通った跡が残るかどうか**である。
  *
  * ## 復元は git ではなく**メモリから**行う
  *
@@ -138,9 +159,16 @@ const MUTATIONS = [
   //
   // 当初ここには「`const g = 1;`（包絡を門で入れるのをやめる）」を置いたが、
   // **それは 2c の「包絡から門を外す」と file / find / replace が 1 文字も違わない複製**
-  // だった ── 歯の本数を 49 → 53 に見せかけるだけで、新しく守るものが無い。
-  // **台帳の本数はラチェットなので、複製は型 1 の再演そのものである。** 差し替えた。
-  { phase: '2c-vii', name: 'ホールドの単調性を外す（傾斜帯の後退が消えて呼吸に戻る）',
+  // だった ── 歯の本数を 49 → 53 に見せかけるだけで、新しく守るものが無い。差し替えた。
+  //
+  // **2c-vii はここに「台帳の本数はラチェットなので」と書いたが、それは偽だった**
+  // （Phase 2c-viii・独立監査が全走査で確認）── ラチェットはこの repo のどこにも
+  // 無く、台帳から変異を削っても何も赤くならなかった。**確かめずに書いた肯定形**である。
+  // いまは下の `EXPECTED_MUTATIONS` が実際にラチェットになっている。
+  //
+  // そしてこの 1 本は `observed` を持っていなかった ── **`observed` を 22/53 から
+  // 補完した当の 2c-vii が、自分で足した変異にだけ付け忘れていた。** 実測して埋めた。
+  { phase: '2c-vii', name: 'ホールドの単調性を外す（傾斜帯の後退が消えて呼吸に戻る）', observed: 1,
     file: 'src/core/fit.ts',
     find: '  return need > previous ? need : previous;',
     replace: '  return need;' },
@@ -156,6 +184,22 @@ const MUTATIONS = [
     file: 'src/image/columnLine.ts',
     find: '  const n = Math.round(extentX * max);\n  return n < 1 ? 1 : n > max ? max : n;',
     replace: '  return max > 512 ? 512 : max;' },
+
+  // ---- Phase 2c-viii（主張の後退を止める）----
+  //
+  // **台帳で唯一、テストそのものを壊す変異である。** 他の 53 本は `src/` の実装を壊して
+  // 「テストが落ちるか」を見るが、この 1 本が守っているのは**テストの幅**のほうで、
+  // だから壊す対象がテストになる。
+  //
+  // 消す 2 行に付いているコメントは「**2c-iv の教訓: 標本を 1 枚しか通さない測定は
+  // 「測った」と書けない**」── つまりこの変異は、記録された教訓の撤回そのものである。
+  // 2c-vii までは、これが `npm test` 緑・`npm run teeth` EXIT=0 で通った
+  // （歯は 4 → 3 に落ちるが `weaker` は警告どまりだった）。いまは 2 か所で止まる:
+  // `widen.test.ts` の点集合の台帳と、`teeth.mjs` の `failed < observed`。
+  { phase: '2c-viii', name: '標本を 1 枚へ戻す（2c-iv の教訓の撤回・掃引の幅が縮む）', observed: 1,
+    file: 'src/tests/survival.test.ts',
+    find: "  // **退化した画像も通す**（2c-iv の教訓: 標本を 1 枚しか通さない測定は「測った」と書けない）\n  ['グレースケール / BALANCED', makeGrayscaleRamp(), 'BALANCED'],\n",
+    replace: '' },
 
   // ---- Phase 2c-vi（配線の生存の行列）----
   //
@@ -360,12 +404,69 @@ function ranTests(out) {
   return /Test Files\s+\d+/.test(out) || /Tests\s+\d+/.test(out);
 }
 
+/**
+ * **台帳のラチェット**（Phase 2c-viii）。
+ *
+ * 2c-vii は「台帳の本数はラチェットなので、複製は型 1 の再演そのものである」と
+ * 書いたが、**そのラチェットは存在しなかった** ── 独立監査が repo を全走査して
+ * 期待本数のリテラルが 0 件であることを確認し、台帳から変異を削っても何も
+ * 赤くならないことを実演した。**確かめずに書いた肯定形**だった。
+ *
+ * これは**人が数字を下げれば通る**形である（§7.10 の型 1 の弱点そのもの）。
+ * それでも置く理由は、いまが「**削除の検出が皆無**」だからで、
+ * 0 から 1 への差は、1 から 2 への差より大きい。
+ *
+ * **この数を上げるときは、複製でないことを確かめること** ── file / find / replace の
+ * 3 つ組が既存と一致する変異は、本数だけ増やして守るものを増やさない。
+ * 下の重複検査が機械で見る。
+ */
+const EXPECTED_MUTATIONS = 54;
+
+if (MUTATIONS.length < EXPECTED_MUTATIONS) {
+  console.error(
+    `台帳の変異が ${MUTATIONS.length} 本しかない（${EXPECTED_MUTATIONS} 本あったはず）。`
+      + '\n歯を消すのは主張の撤回である。消すなら EXPECTED_MUTATIONS も同じ PR で下げること。',
+  );
+  process.exit(1);
+}
+
+/** **複製の検出** ── 本数だけ増える歯を機械で止める（2c-vii が手で見つけた型）。 */
+{
+  const seen = new Map();
+  const dupes = [];
+  for (const m of MUTATIONS) {
+    const key = `${m.file} ${m.find} ${m.replace}`;
+    if (seen.has(key)) dupes.push(`${m.phase} / ${m.name}\n    ← ${seen.get(key)} と同一`);
+    else seen.set(key, `${m.phase} / ${m.name}`);
+  }
+  if (dupes.length > 0) {
+    console.error(`台帳に複製が ${dupes.length} 本ある（本数だけ増えて守るものが増えない）:\n  ${dupes.join('\n  ')}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * **`observed` の完全性。** 2c-vii は `observed` を 22/53 から補完したが、
+ * **自分で足した 1 本にだけ付け忘れていた**（2c-viii で実測して埋めた）。
+ * `failed < undefined` は常に false なので、欠けた行では弱りの検出が静かに効かない。
+ */
+{
+  const missing = MUTATIONS.filter((m) => typeof m.observed !== 'number');
+  if (missing.length > 0) {
+    console.error(
+      `\`observed\` の無い変異が ${missing.length} 本ある ── そこでは弱りの検出が効かない:\n  `
+        + missing.map((m) => `${m.phase} / ${m.name}`).join('\n  '),
+    );
+    process.exit(1);
+  }
+}
+
 const only = process.argv[2];
 const targets = only
   ? MUTATIONS.filter((m) => m.name.includes(only) || m.phase === only)
   : MUTATIONS;
 
-console.log(`歯の確認: ${targets.length} 変異\n`);
+console.log(`歯の確認: ${targets.length} 変異（台帳 ${MUTATIONS.length} 本）\n`);
 
 // ---- 0. まず素の状態が緑であることを確かめる（赤い所から始めたら何も言えない）----
 const base = run('npx', ['vitest', 'run']);
@@ -414,8 +515,14 @@ try {
       console.log(`✅ ${m.name} → 落ちた（件数を読めず）`);
       results.push({ ...m, status: 'ok', failed: null });
     } else if (failed < m.observed) {
-      console.log(`⚠️  ${m.name} → ${failed} 件（${m.phase} 時点は ${m.observed} 件。減っている）`);
+      // **Phase 2c-viii で落とすようにした。** 冒頭の実演のとおり、ここが警告どまりだと
+      // 「標本を 2 枚から 1 枚へ戻す」＝ 2c-iv の教訓の撤回が、CI 緑のまま通る。
+      console.log(
+        `❌ ${m.name}\n   → ${failed} 件（${m.phase} 時点は ${m.observed} 件。**減っている**）`
+          + `\n   守っていたものが減った。正当なリファクタなら、この PR の中で observed を ${failed} へ下げること`,
+      );
       results.push({ ...m, status: 'weaker', failed });
+      exitCode = 1;
     } else {
       console.log(`✅ ${m.name} → ${failed} 件`);
       results.push({ ...m, status: 'ok', failed });
@@ -445,6 +552,14 @@ if (bad.length > 0) {
     '\n抜けた歯がある。守っているはずのものを壊してもテストが落ちない ──'
       + '\nテストが恒等な変換に潰れているか、予算が緩すぎる。'
       + '\n（SPEC §7.1「参照実装は独立に書く」／§7.7「`fillRatios` を採点者にしてはいけない」）',
+  );
+}
+if (weak.length > 0) {
+  console.error(
+    `\n弱った歯が ${weak.length} 本ある（Phase 2c-viii から**落ちる**）。`
+      + '\n件数が減るのは「テストが恒等に潰れ始めた」の早期兆候である。'
+      + '\n正当なリファクタで減ったのなら、この PR の中で台帳の observed を下げること ──'
+      + '\n**ログの 1 行は誰も読まないが、台帳の差分は査読に出る。**',
   );
 }
 process.exit(exitCode);
