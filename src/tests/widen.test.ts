@@ -93,6 +93,19 @@ type SweepKind =
 
 const SWEEP_LINE = /for\s*\(\s*(?:let|const)\s/;
 
+/**
+ * **コメント行を除く**（Phase 2c-viii）。
+ *
+ * 2c-vii の国勢調査は**自分自身の説明文を掃引として数えていた** ── 下の
+ * 「`for (const x of y)` は本体が波括弧でないこともある」という注釈行が
+ * `SWEEP_LINE` に当たり、`完全列挙` として 1 本計上されていた。
+ * 独立監査が発見した。**数える機械が自分の説明を数える**のは型 1 の一種である。
+ */
+const isComment = (line: string): boolean => {
+  const t = line.trim();
+  return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*');
+};
+
 /** 1 行から掃引らしさを読む。**読めなかったら `null` を返す**（人へ回す） */
 function classifyLine(line: string, following: string): SweepKind | null {
   const step = /for\s*\(\s*let\s+(\w+)\s*=\s*[^;]+;[^;]*;\s*\1\s*(\+=|\*=)\s*([^)]+)\)/.exec(line);
@@ -126,7 +139,79 @@ function classifyLine(line: string, following: string): SweepKind | null {
  * **だから数え方をここに固定する。** この数字自体には意味が無く、
  * 「掃引が増えたのに誰も分類していない」を検出するためだけに在る。
  */
-const EXPECTED_SWEEPS = { 量子化: 12, 切り詰め: 16, 点集合: 65, 完全列挙: 156 } as const;
+const EXPECTED_SWEEPS = { 量子化: 12, 切り詰め: 16, 点集合: 65, 完全列挙: 158 } as const;
+
+/**
+ * **点集合の規模の台帳**（Phase 2c-viii）。
+ *
+ * ## 行数を数えるだけでは、掃引は静かに狭められる
+ *
+ * 上の国勢調査は `for` の**行数**しか見ていない。**行数はそのままで幅だけ縮める**変異は、
+ * 数字を 1 つも動かさずに緑で通る。独立監査が 9 通り試し、**4 通りが通った**:
+ *
+ * | 変異 | 2c-vii の機構 |
+ * |---|---|
+ * | `survival` の `CASES` を 2 標本 → 1（**2c-iv の教訓の撤回**） | 🟢 通る |
+ * | `survival` の `DIMS` を 9 → 2 水準（3,960 → 880 セル） | 🟢 通る |
+ * | `framing` の `VIEWPORTS` を 3 → 1 | 🟢 通る |
+ * | ランプ帯を 9 点 → 2 点 | 🟢 通る |
+ *
+ * → **要素数を数える。** 名前つきの配列リテラルを反復している掃引について、
+ * その要素数を台帳に持ち、**下回ったら赤**にする。上の 4 通りは全部ここで止まる。
+ *
+ * ## 合計ではなく 1 本ずつ持つ理由
+ *
+ * 合計だけを見ると、**片方を縮めて他方を伸ばせば相殺できる**。
+ * 1 本ずつ持てばその逃げ道が無い。新しい掃引が増えるぶんには何も言わない
+ * （台帳に無い名前は自由）── この機構が主張するのは「**狭まっていないこと**」だけである。
+ *
+ * ## 射程（正直に）
+ *
+ * - **同じファイルの中で配列リテラルとして定義された名前**しか読めない。
+ *   他ファイルから import した点集合（`SPECIMEN_LEDGER` など）は数えられない
+ * - `for (let i = 0; i < N; i++)` の `N` が名前つき定数のときも読めない
+ *   （監査の実測: 249 本のうち **120 本**は規模を静的に読めない）
+ * - **要素数は「幅」ではない。** `DIMS` の 9 点が `[0, 0.5, …]` から `[0, 0, …]` へ
+ *   変わっても本数は 9 のままである。値の分布は見ていない
+ */
+const EXPECTED_POINT_SET_SIZES: Readonly<Record<string, number>> = {
+  'collapse.test.ts:cases': 7,
+  'collapse.test.ts:targets': 6,
+  'collapsePhase.test.ts:TIERS': 3,
+  'color.test.ts:corners': 6,
+  'color.test.ts:PAIRS': 12,
+  'fit.test.ts:cases': 4,
+  'framing.test.ts:VIEWPORTS': 4,
+  'protocol.test.ts:cases': 4,
+  'survival.test.ts:CASES': 2,
+  'survival.test.ts:DIMS': 9,
+  'vendor.test.ts:EXPECTED': 7,
+  'widen.test.ts:RAMP': 9,
+};
+
+/** `const NAME = [ … ]` の要素数を読む。入れ子と末尾コンマを勘定に入れる */
+function literalSizes(src: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const re = /(?:const|let)\s+([A-Za-z_$][\w$]*)(?:\s*:[^=]+)?\s*=\s*\[/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    let i = re.lastIndex;
+    let depth = 1;
+    let commas = 0;
+    let empty = true;
+    for (; i < src.length && depth > 0; i++) {
+      const c = src[i];
+      if (c === '[' || c === '(' || c === '{') depth++;
+      else if (c === ']' || c === ')' || c === '}') depth--;
+      else if (c === ',' && depth === 1) commas++;
+      if (depth === 1 && !/\s/.test(c) && c !== ',') empty = false;
+    }
+    if (depth !== 0) continue;
+    const trailing = /,\s*$/.test(src.slice(re.lastIndex, i - 1)) ? 1 : 0;
+    out.set(m[1], empty ? 0 : commas + 1 - trailing);
+  }
+  return out;
+}
 
 describe('掃引の国勢調査', () => {
   const dir = dirname(fileURLToPath(import.meta.url));
@@ -138,7 +223,7 @@ describe('掃引の国勢調査', () => {
     for (const f of files) {
       const lines = readFileSync(join(dir, f), 'utf8').split('\n');
       for (let i = 0; i < lines.length; i++) {
-        if (!SWEEP_LINE.test(lines[i])) continue;
+        if (!SWEEP_LINE.test(lines[i]) || isComment(lines[i])) continue;
         const kind = classifyLine(lines[i], lines.slice(i + 1, i + 4).join(' '));
         if (kind === null) unreadable.push(`${f}:${i + 1}  ${lines[i].trim().slice(0, 90)}`);
         else tally[kind]++;
@@ -153,10 +238,48 @@ describe('掃引の国勢調査', () => {
    * **標本掃引が全体の何割か**を出しておく。完全列挙は密度の概念を持たないので、
    * 型 2 の機構が届く範囲はここで頭打ちになる。
    */
-  it('標本掃引は 93 / 249 本（残り 156 本は完全列挙で密度の概念が無い）', () => {
+  it('標本掃引は 93 / 251 本（残り 158 本は完全列挙で密度の概念が無い）', () => {
     const sample = EXPECTED_SWEEPS.量子化 + EXPECTED_SWEEPS.切り詰め + EXPECTED_SWEEPS.点集合;
     expect(sample).toBe(93);
-    expect(sample + EXPECTED_SWEEPS.完全列挙).toBe(249);
+    // **249 → 251**（2c-viii）。内訳は −1 と +3 である:
+    //   −1: 国勢調査が数えていた**自分の説明文**（コメント行）を除いた
+    //   +3: 下の「点集合の規模」が台帳とファイルを舐めるための完全列挙 3 本
+    // **後者は自分で足した掃引を自分で数えている。** 完全列挙なので密度の概念は無く、
+    // 幅の主張には使えない ── 本数が増えたことを「広くなった」と読んではいけない。
+    expect(sample + EXPECTED_SWEEPS.完全列挙).toBe(251);
+  });
+
+  /**
+   * **点集合が狭められていないか。** 上の 3 本は行数しか見ないので、
+   * 幅を縮める変異（標本 2 → 1・水準 9 → 2）を 1 本も捕まえない。
+   */
+  it('名前つき点集合の要素数が台帳を下回らない', () => {
+    const found = new Map<string, number>();
+    for (const f of files) {
+      const src = readFileSync(join(dir, f), 'utf8');
+      const sizes = literalSizes(src);
+      for (const line of src.split('\n')) {
+        if (isComment(line)) continue;
+        const m = /for\s*\(\s*const\s+.*?\bof\s+([A-Za-z_$][\w$]*)\s*\)/.exec(line);
+        if (!m) continue;
+        const size = sizes.get(m[1]);
+        if (size !== undefined) found.set(`${f}:${m[1]}`, size);
+      }
+    }
+    // **台帳そのものが消せてはいけない。** 行を消せば掃引は「台帳に無い名前」になり、
+    // 縮めても何も言われなくなる ── 機構の中に同じ穴を掘らないための 1 行である。
+    expect(Object.keys(EXPECTED_POINT_SET_SIZES).length).toBeGreaterThanOrEqual(12);
+    const shrunk: string[] = [];
+    for (const [key, want] of Object.entries(EXPECTED_POINT_SET_SIZES)) {
+      const got = found.get(key);
+      if (got === undefined) shrunk.push(`${key}: 掃引ごと消えた（${want} 点あった）`);
+      else if (got < want) shrunk.push(`${key}: ${want} → ${got} 点へ縮んだ`);
+    }
+    expect(
+      shrunk,
+      `点集合が狭まっている:\n${shrunk.join('\n')}\n`
+        + '正当に減らしたのなら、この PR の中で EXPECTED_POINT_SET_SIZES も下げること',
+    ).toEqual([]);
   });
 });
 
