@@ -11,23 +11,44 @@ permissions:
   pages: write
   id-token: write
 
-# **ref ごとに分ける**（Phase 2c-viii で実測）。
+# **main は run ごとに分ける／PR ブランチは ref ごとに分ける**（Phase 2c-ix で実測）。
+#
+# ## 一段目（2c-viii）—— ref が入っていなかった
 #
 # もとは `group: pages` で、**ref が入っていなかった** ── 全 run が 1 つのグループを
 # 共有するので、**別のブランチを push しただけで走行中の run が cancel される。**
 # 実測: #37 の run（22:20:13 開始）は `npm run teeth` の途中 22:25:01 に落ち、
 # #38 の run が始まったのは **22:24:48** ── 13 秒後に消された。
+# 履歴では **2c-vii でも 2 本が cancelled のまま**だった（31529963065 / 31530207696）。
 #
 # **これは「赤いが中身が無い」である。** `gh pr checks` は `fail` と表示するが
 # conclusion は `cancelled` で、**ゲートは走っていない**。テストが落ちたのと
 # 見分けがつかない形で、`npm run teeth`（7〜20 分）が丸ごと飛ぶ。
-# 履歴を見ると **2c-vii でも 2 本が cancelled のまま**だった（31529963065 / 31530207696）──
-# **実装 PR と文書 PR を分ける運用（§8）は、この設定と組み合わさると必ず踏む。**
 #
-# `deploy` は `main` への push のときだけ走るので、ref を鍵に入れても
-# Pages のデプロイは `pages-refs/heads/main` で直列のままである。
+# ## 二段目（2c-ix）—— ref を入れても、同じ ref への連続マージは覆えていなかった
+#
+# `pages-${{ github.ref }}` が塞いだのは**別ブランチ**からの cancel だけである。
+# §8 の運用は「1 フェーズ = 実装 PR + 文書 PR」なので **毎フェーズ main へ 2 本続けて
+# マージする** ── ref はどちらも `refs/heads/main` で、**2 本目が 1 本目の main run を消す。**
+# 実測: run 31694020549（`7d51c96`）は build / gecko / deploy とも **開始 39 秒で
+# cancelled**（build は通常 21 分）── ゲートは 1 つも走っていない。
+# **同じ型が、PR 側ではなく main 側で出た。**
+#
+# ## 待たせる形では塞げない
+#
+# `cancel-in-progress: false` にして 2 本目を待たせる案は**穴が残る**。GitHub は
+# 「同じグループの `pending` は新しい run に席を譲って cancel される」と明記していて、
+# これは **`cancel-in-progress` の値に依らない**（workflow-syntax）── 3 本目が来た
+# 時点で同じ `cancelled` が生まれる。しかも 2 本目のゲートが 21 分待たされる。
+#
+# **main で消すべき run はそもそも無い。** だから鍵に SHA を入れて**同居させない** ──
+# main の run は互いに触れないので、cancel も待ちも起きない。
+# PR ブランチは従来どおり ref だけで、push のたびに古い run を消す（ここでは
+# 消すのが正しい ── 同じブランチの古い commit を検査し続ける意味は無い）。
+#
+# Pages の直列は失われるので、`deploy` のジョブ側の鍵へ移した（下）。
 concurrency:
-  group: pages-${{ github.ref }}
+  group: pages-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -109,10 +130,67 @@ jobs:
       - run: firefox --version
       - run: npm run gecko
 
-  # デプロイは main への push のときだけ。PR ではゲートまでで止める。
-  deploy:
+  # 「この run の commit が、いま main の tip か」を **build のあとに 1 回**訊く
+  # （Phase 2c-ix で足した）。
+  #
+  # ## なぜ要るか —— 直列にするだけでは「古いほうが後に着く」を防げない
+  #
+  # `concurrency` を run ごとに分けた結果、main へ続けてマージした 2 本は**並走する**。
+  # 下の `pages-deploy` は同時に走らないことしか保証しないので、**先に鍵を取ったほうが
+  # 後に公開されると、サイトは古いコミットを配る**。2 本の間隔は 36 秒（2c-ix の実測）で、
+  # build は 21 分 ── runner の揺らぎのほうが 36 秒より大きくなりうる。
+  #
+  # ## これで順序は保証される（「たぶん揃う」ではない）
+  #
+  # 照会は build の**あと**に置く。A が tip を名乗れるのは B がまだマージされていない
+  # ときだけで、そのとき B の run は存在しない。B がマージ済みなら A の照会は tip = B を
+  # 返して A は公開しない ── **A が B を上書きする経路が無い。**
+  # 中間コミットを配らないのは意図どおりである（配る意味が無い）。
+  #
+  # **build に混ぜない。** これはゲートではなく**公開の可否**であって、混ぜると
+  # `gecko` を分けたのと同じ理由（§ジョブ分割）で読めなくなる ── 別ジョブなら
+  # `gh run view` に **`deploy: skipped`** と出て、「走って落ちた」とも「消された」とも
+  # 区別がつく。
+  #
+  # `gh api` が失敗したら**赤くする**（既定の `bash -e`）。「訊けなかったから公開しない」は
+  # 緑のまま何もしない最悪の失敗モードなので、そちらへは倒さない。
+  tip:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.ask.outputs.current }}
+    steps:
+      - id: ask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+            echo "この run の \`$GITHUB_SHA\` が main の tip —— **公開する**。" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo "main の tip は \`$tip\` で、この run は \`$GITHUB_SHA\` —— **公開しない**（古い成果物で新しいのを上書きしないため）。ゲートはこの run で走っている。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # デプロイは main への push のときだけ。PR ではゲートまでで止める。
+  #
+  # **Pages のデプロイだけは直列に保つ。** 上の `concurrency` を run ごとに分けたので、
+  # workflow の鍵はもう main の 2 本を直列にしない ── だから鍵をここへ置く。
+  # GitHub の Pages スターターワークフローは `group: "pages"` /
+  # **`cancel-in-progress: false`** を「同時デプロイは 1 本」「**走行中の本番デプロイは
+  # 中断しない**」と明記しており、それに合わせる（走行中を消す形は、Pages 側に
+  # 中途半端なデプロイを残しうる）。
+  #
+  # `pages-deploy` は ref を含まない ── PR では `deploy` が走らないので、
+  # このグループに入るのは main の run だけである。
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.tip.outputs.current == 'true'
+    needs: [build, tip]
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment:
       name: github-pages
