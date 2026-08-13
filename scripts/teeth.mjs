@@ -645,12 +645,109 @@ const EXPECTED_OBSERVED_TOTAL = 143;
   }
 }
 
-const only = process.argv[2];
-const targets = only
+/**
+ * **`--shard i/n`**（Phase 2c-ix の続き）。台帳を n 等分して i 番目だけを回す。
+ *
+ * ## なぜ足したか —— 費用は本数 × フルスイートで、線形に伸びる
+ *
+ * 判定は 1 本ごとに**テスト一式を丸ごと**走らせるので、費用は本数に比例する。
+ * 実測（run 31707649305・CI）: **1290 秒 ＝ 21 分 30 秒**で、`build` ジョブ全体
+ * 1341 秒の **96%**。内訳は素の状態 1 回 ＋ 変異 57 回 ＝ **58 回のフルスイート**で、
+ * 1 回あたり 22.2 秒（`npm test` 単体の 24 秒と一致）。歯が 53 → 54 → 57 と
+ * 増えたぶん、そのまま伸びている。
+ *
+ * **変異どうしは独立**なので、runner を分ければそのまま短くなる。
+ *
+ * ## 判定の意味は変えていない
+ *
+ * 各変異は**今までどおりフルスイートで**判定される。速くしたいからといって
+ * 「その変異に関係するテストだけ走らせる」形にはしない ── それは
+ * 「*どれか*のテストが捕まえるか」という問いを「*指定した*テストが捕まえるか」に
+ * すり替えることであり、`observed` の意味も作り直しになる。
+ *
+ * ## 台帳のラチェットは分割の影響を受けない
+ *
+ * `EXPECTED_MUTATIONS`・複製検査・`observed` の完全性と総和は、**すべて
+ * `MUTATIONS`（台帳全体）に対して、この絞り込みより前**で走る ──
+ * どのシャードも台帳を丸ごと検査する。**分割で薄まるのは実行だけ**である。
+ *
+ * ## 空のシャードは赤にする
+ *
+ * matrix を書き間違えて 1 本も当たらないシャードができたとき、黙って緑を返すのは
+ * 「常に緑」という最悪の失敗モードそのものである。**0 本なら落とす。**
+ * `i > n` も同じ理由で受け付けない（`[1, 3]` のような穴あき matrix を弾く）。
+ */
+function parseShardSpec(spec) {
+  const m = /^(\d+)\/(\d+)$/.exec(spec ?? '');
+  if (!m) {
+    console.error(`--shard は i/n の形で渡すこと（例: --shard 2/3）。受け取ったのは ${JSON.stringify(spec)}`);
+    process.exit(1);
+  }
+  const i = Number(m[1]);
+  const n = Number(m[2]);
+  if (n < 1 || i < 1 || i > n) {
+    console.error(`--shard ${i}/${n} は範囲の外である（1 ≤ i ≤ n・n ≥ 1）。matrix と分割数がずれている。`);
+    process.exit(1);
+  }
+  return { i, n };
+}
+
+/**
+ * **知らない引数は黙って無視しない**（実装中に踏んだ ── Phase 2c-ix の続き）。
+ *
+ * 綴りを間違えて `--shards 1/3` と書くと、`--shards` が読み飛ばされて **`1/3` が
+ * 絞り込み語として拾われ**、名前にも phase にも当たらないので **0 本を回して緑**になる。
+ * 引数の綴り違いが「歯を 1 本も確認しない」に化けるのは、`teeth` が存在する理由
+ * そのものに反する。→ **`-` で始まる知らない引数は落とす。**
+ */
+const argv = process.argv.slice(2);
+// **「フラグが在る」と「値が在る」を分けて持つ。** 一緒にすると `--shard`（値なし）が
+// 「分割なし」に化けて、**全 57 本を黙って回す** ── 安全側ではあるが、CI で分割が
+// 効いていないことに気づけない（3 シャードが同じ 57 本を回して 3 倍の時間で緑になる）。
+let shardSeen = false;
+let shardSpec;
+const positional = [];
+for (let k = 0; k < argv.length; k += 1) {
+  const a = argv[k];
+  if (a.startsWith('--shard=')) { shardSeen = true; shardSpec = a.slice('--shard='.length); continue; }
+  if (a === '--shard') { shardSeen = true; shardSpec = argv[k + 1]; k += 1; continue; }
+  if (a.startsWith('-')) {
+    console.error(`知らない引数 ${JSON.stringify(a)} を受け取った（使えるのは \`--shard i/n\` と絞り込み語 1 つ）。`);
+    process.exit(1);
+  }
+  positional.push(a);
+}
+if (positional.length > 1) {
+  console.error(`絞り込み語は 1 つまでである（受け取ったのは ${JSON.stringify(positional)}）。`);
+  process.exit(1);
+}
+
+const only = positional[0];
+const shard = shardSeen ? parseShardSpec(shardSpec) : null;
+
+const selected = only
   ? MUTATIONS.filter((m) => m.name.includes(only) || m.phase === only)
   : MUTATIONS;
 
-console.log(`歯の確認: ${targets.length} 変異（台帳 ${MUTATIONS.length} 本）\n`);
+// 剰余で配る（連続ブロックにしない）── 台帳の並びは局所的に費用が偏りうるので、
+// 交互に取るほうが n で割った各シャードの本数が揃う。
+const targets = shard
+  ? selected.filter((_, idx) => idx % shard.n === shard.i - 1)
+  : selected;
+
+// **0 本で緑を返さない。** 分割の有無に依らず落とす ── `npm run teeth -- 打ち間違い` は
+// 2c-viii 以前からこの形で通っていた（`teeth` の本体が 1 度も回らないまま EXIT=0）。
+if (targets.length === 0) {
+  const how = shard ? `シャード ${shard.i}/${shard.n}` : `絞り込み語 ${JSON.stringify(only)}`;
+  console.error(
+    `${how} に当たる変異が 1 本も無い（台帳 ${MUTATIONS.length} 本・絞り込み後 ${selected.length} 本）。`
+      + '\n1 本も回さずに緑を返すのは「常に緑」である。分割数か絞り込み語を見直すこと。',
+  );
+  process.exit(1);
+}
+
+const shardLabel = shard ? `シャード ${shard.i}/${shard.n} ── ` : '';
+console.log(`歯の確認: ${shardLabel}${targets.length} 変異（台帳 ${MUTATIONS.length} 本）\n`);
 
 // ---- 0. まず素の状態が緑であることを確かめる（赤い所から始めたら何も言えない）----
 const base = run('npx', ['vitest', 'run']);
