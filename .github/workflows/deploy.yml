@@ -69,18 +69,6 @@ jobs:
       # 「常に緑」という最悪の失敗モードなので、あちらは skip せず落ちるようにしてある。
       - run: npm run build
       - run: npm test
-      # 歯の確認（Phase 1c で仕組みにした）。
-      #
-      # `npm test` は「テストが緑か」しか見ない。**緑には 2 種類ある** ──
-      # 守っているから緑なのと、何も守っていないから緑なのと。後者は
-      # 予算を緩く書いたときと、テストが恒等な変換に潰れたときに生まれ、
-      # 人間には見えない（緩い方向に外しても誰も落ちない）。
-      # `npm run teeth` は台帳の変異を 1 つずつ入れて「本当に落ちるか」を確かめる。
-      # 落ちなくなった歯があれば CI が赤くなる。
-      #
-      # PR で走らせる価値がある: §7.1 の `reconstructMean` も §7.7 の `fillRatios` も、
-      # これが在れば発見が何フェーズも早かった。
-      - run: npm run teeth
       # 忠実性ラダーの **構造回帰だけ**（Phase 2a で足した）。
       #
       # ## なぜ `--structural` なのか —— CI に ΔE00 を置くと「緑だが中身が無い」になる
@@ -103,6 +91,56 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
+
+  # 歯の確認（Phase 1c で仕組みにした。**2c-ix の続きで分割した**）。
+  #
+  # `npm test` は「テストが緑か」しか見ない。**緑には 2 種類ある** ──
+  # 守っているから緑なのと、何も守っていないから緑なのと。後者は
+  # 予算を緩く書いたときと、テストが恒等な変換に潰れたときに生まれ、
+  # 人間には見えない（緩い方向に外しても誰も落ちない）。
+  # `npm run teeth` は台帳の変異を 1 つずつ入れて「本当に落ちるか」を確かめる。
+  # 落ちなくなった歯があれば CI が赤くなる。
+  #
+  # PR で走らせる価値がある: §7.1 の `reconstructMean` も §7.7 の `fillRatios` も、
+  # これが在れば発見が何フェーズも早かった。
+  #
+  # ## なぜ `build` から出して分割したか —— 費用の 96% がここだった
+  #
+  # 実測（run 31707649305・CI のステップ別）: `teeth` **1290 秒 ＝ 21 分 30 秒**に対し、
+  # `build` ジョブ全体は 1341 秒 ── **96%** がここである（`npm test` 24 秒 /
+  # `ladder --structural` 13 秒 / `npm ci` 4 秒 / `npm run build` 4 秒）。
+  # 判定は 1 本ごとにフルスイートなので、費用は **素の状態 1 回 ＋ 変異 57 回
+  # ＝ 58 回 × 22.2 秒**。歯が増えるとそのまま伸びる。
+  #
+  # **変異どうしは独立**なので runner を分ければ短くなる（3 分割で 19 本ずつ）。
+  # **判定の意味は変えていない** ── 各変異は今までどおりフルスイートで判定される。
+  #
+  # `build` と混ぜたままでは分割できない: `npm run build` / `npm test` /
+  # `ladder` が 3 回ずつ走り、**`upload-pages-artifact` は同じ名前を 3 回上げて衝突する**。
+  #
+  # ## 分割数は matrix の長さから導く（二重管理にしない）
+  #
+  # 分母に `strategy.job-total`（＝ matrix の要素数）を使う。`[1, 2, 3]` を `[1, 2]` に
+  # 変えても分母が自動で追随するので、**「matrix を減らしたのに分母が古いままで
+  # 3 本目が誰にも回らない」が起こらない**。`[1, 3]` のような穴あきにすると
+  # `--shard 3/2` になり、`teeth.mjs` が範囲外として落とす。
+  #
+  # dist が要る（`privacy.test.ts` が読む）ので、各シャードで `npm run build` を先に走らせる。
+  teeth:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run teeth -- --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
   # **ひとつ前の main run が cancelled なら赤くする**（Phase 2c-ix の続き）。
   #
@@ -206,10 +244,14 @@ jobs:
   #
   # ## これで順序は保証される（「たぶん揃う」ではない）
   #
-  # 照会は build の**あと**に置く。A が tip を名乗れるのは B がまだマージされていない
-  # ときだけで、そのとき B の run は存在しない。B がマージ済みなら A の照会は tip = B を
-  # 返して A は公開しない ── **A が B を上書きする経路が無い。**
+  # 照会はゲート（`build` と `teeth`）の**あと**に置く。A が tip を名乗れるのは B がまだ
+  # マージされていないときだけで、そのとき B の run は存在しない。B がマージ済みなら
+  # A の照会は tip = B を返して A は公開しない ── **A が B を上書きする経路が無い。**
   # 中間コミットを配らないのは意図どおりである（配る意味が無い）。
+  #
+  # **この保証は所要時間に依存しない。** 2c-ix の続きで `teeth` を 3 分割して
+  # 21 分 → 8 分前後に縮めたが、上の論法は「B がマージ済みか」だけを使っており、
+  # ゲートが何分かかるかを一切使っていない。
   #
   # **build に混ぜない。** これはゲートではなく**公開の可否**であって、混ぜると
   # `gecko` を分けたのと同じ理由（§ジョブ分割）で読めなくなる ── 別ジョブなら
@@ -220,7 +262,7 @@ jobs:
   # 緑のまま何もしない最悪の失敗モードなので、そちらへは倒さない。
   tip:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build
+    needs: [build, teeth]
     runs-on: ubuntu-latest
     outputs:
       current: ${{ steps.ask.outputs.current }}
@@ -251,7 +293,7 @@ jobs:
   # このグループに入るのは main の run だけである。
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.tip.outputs.current == 'true'
-    needs: [build, tip]
+    needs: [build, teeth, tip]
     concurrency:
       group: pages-deploy
       cancel-in-progress: false
