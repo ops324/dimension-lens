@@ -35,6 +35,7 @@ import { SPECIMEN_LEDGER } from '../image/fixture';
 import { linearizeRgba } from '../image/linearize';
 import { computeScales, computeStats } from '../image/stats';
 import { fitGrid, TIER_BUDGET } from '../image/grid';
+import { K_SPRITE } from '../image/spriteGain';
 import { makeLiftPayload } from '../ingest/session';
 import { LensScene } from '../scene/lensScene';
 
@@ -167,7 +168,7 @@ describe('標本の台帳', () => {
    * 台帳の別の標本を通すと `expected === undefined` → `record(…, null)` ＝ **採点しない**
    * になる（赤くならずに消える）。**そこは 2c-vii では直していない**（ラダーは GPU ゲート）。
    */
-  it('n ≤ 512 の破れは標本のアスペクトが決める（破れない標本が在る）', () => {
+  it('`4 × rows` が 512 を超えるかはアスペクトが決める（畳む前の量）', () => {
     const breaks: string[] = [];
     const holds: string[] = [];
     for (const spec of SPECIMEN_LEDGER) {
@@ -176,10 +177,58 @@ describe('標本の台帳', () => {
         (4 * grid.rows > 512 ? breaks : holds).push(`${spec.id}/${tier}=${4 * grid.rows}`);
       }
     }
-    // No.0 系は破れる（SPEC §4.6.1 の主張）
+    // No.0 系は超える（SPEC §4.6.1 の主張）
     expect(breaks.some((b) => b.startsWith('No.0/')), breaks.join(' ')).toBe(true);
-    // **そして破れない標本が在る** ── 主張はアスペクトについてのものだった
+    // **そして超えない標本が在る** ── 主張はアスペクトについてのものだった
     expect(holds.filter((h) => h.startsWith('wide/')).length, holds.join(' ')).toBe(3);
     expect(holds.filter((h) => h.startsWith('row1/')).length, holds.join(' ')).toBe(3);
   }, 60_000);
+
+  /**
+   * **上の 1 本は実装の深度を 1 度も読んでいない**（Phase 2c-x で判明）。
+   *
+   * `4 * grid.rows` を `fitGrid` から計算し直しているだけなので、
+   * **2c-x が畳みを入れて破れを閉じても、緑のまま「破れが在る」と主張し続ける。**
+   * 独立監査が「落ちてほしいのに落ちないもの」として名指しした 5 本のうちの 1 本である
+   * （残り 4 本も同じ型 ── `collapse.test.ts` は `ny` をテスト側の literal で書いており、
+   * `sceneFields` / `survival` は `d = 2` か往復一致しか見ていない）。
+   *
+   * → **実装が実際に出す深度**を読む行をここへ足す。上の行は「畳む前の量」の記録として残す
+   * （2 つは別の主張である ── 片方を消すと、どちらが直ったのかが読めなくなる）。
+   */
+  it('畳みを入れたあと、実装が出す深度は全標本 × 全ティアで 512 以下', () => {
+    const over: string[] = [];
+    const seen: string[] = [];
+    for (const spec of SPECIMEN_LEDGER) {
+      for (const tier of ['BALANCED', 'HIGH', 'ULTRA'] as const) {
+        const { scene, grid } = sceneFor(spec, tier);
+        let worst = 0;
+        let worstAt = 0;
+        // 折れ点は `extentY = K_SPRITE·ρ/m` に在る（`ρ = s0/s0y`。Phase 2c-x で訂正）。
+        // ρ を落とすと −3.8%〜+0.4% ずれるので、**両方の族**とその周辺を通す。
+        const eps: number[] = [];
+        for (let m = 1; m <= grid.rows; m++) {
+          for (const k of [K_SPRITE / m, (K_SPRITE * (grid.cols / grid.rows)) / m]) {
+            if (k > 0 && k <= 1) eps.push(k * 0.999999, k, k * 1.000001);
+          }
+          // 畳み自身の折れ点（`rows'` が 1 変わる境界）
+          const f = (m + 0.5) / grid.rows;
+          if (f > 0 && f <= 1) eps.push(f * 0.999999, f, f * 1.000001);
+        }
+        eps.push(Number.EPSILON, 1e-7, 1e-4, 1e-3, 0.5, 1);
+        for (const e of eps) {
+          scene.setDimLevel(1 + e);
+          scene.update(0);
+          const d = scene.stats().modelledAdditionDepth;
+          if (d > worst) { worst = d; worstAt = 1 + e; }
+        }
+        seen.push(`${spec.id}/${tier}=${worst}@${worstAt.toFixed(7)}`);
+        if (worst > 512) over.push(`${spec.id}/${tier}=${worst}@${worstAt.toFixed(7)}`);
+      }
+    }
+    expect(seen.length).toBe(18);
+    expect(over, `予算 n ≤ 512 を破った: ${over.join(' ')} / 全 ${seen.join(' ')}`).toEqual([]);
+    // **この行が「畳みが効いている」ことを主張する。** 畳みを外すと No.0 系 12 セルが 512 超になる
+    expect(seen.some((s) => s.startsWith('No.0/HIGH='))).toBe(true);
+  }, 120_000);
 });

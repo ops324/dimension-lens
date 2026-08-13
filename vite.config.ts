@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin } from 'vite';
+import { configDefaults } from 'vitest/config';
 
 /**
  * Content-Security-Policy。
@@ -87,6 +88,41 @@ export default defineConfig({
   plugins: [cspPlugin()],
   // worker を same-origin の ES チャンクとして出す(blob: に頼らない)
   worker: { format: 'es' },
+  /**
+   * **repo の中に置かれた git worktree のテストを拾わない**（Phase 2c-x で踏んだ）。
+   *
+   * vitest の既定 exclude は `node_modules` / `dist` / `.git` などで、
+   * `.claude/worktrees/<名前>/` は入っていない。そこに repo の複製が在ると
+   * **同じテストが 2 回集められる**（実測: 31 ファイル 447 件 → 62 ファイル 894 件）。
+   *
+   * これは件数が増えるだけの問題ではない。`scripts/teeth.mjs` は
+   * **この repo の `src/` だけを変異させて落ちた件数を数える**ので、
+   * 変異していない複製が同じ実行に混ざると、
+   * **台帳の `observed` が「変異と無関係な走行」を含む数になる** ──
+   * つまり歯の強さの記録が、他人の作業ツリーの状態に依存する。
+   *
+   * `defaultExclude` に足す形で書く（既定を置き換えると `node_modules` が戻ってくる）。
+   */
+  test: {
+    exclude: [...configDefaults.exclude, '**/.claude/**'],
+    /**
+     * **既定の 5 秒に預けない**（Phase 2c-x で踏んだ）。
+     *
+     * vitest はファイルを並列に走らせるので、重いファイル（`fold` / `specimen` /
+     * `docLedger` / `widen` はシーンを万回単位で回す）が居るあいだ、
+     * 軽いファイルはスケジュールから外れて待つ。実測: `sceneFields.test.ts` の
+     * 「mean は全点が画像のリニア平均になる」は**単独では 629 ms** なのに、
+     * 全体走行では 5000 ms の既定を超えて落ちた ── **止まっていないのに赤くなる。**
+     *
+     * これは「壊れていても緑」の逆で、**直っていても赤**である。どちらも
+     * 判定が測っているものを取り違えている点で同じ質の欠陥なので、窓を機構へ合わせる。
+     * CI の runner はこの Mac より遅いので、そちらでは先に出る。
+     *
+     * **個々の重いテストには `it(…, 60_000)` を明示してある。** ここが受け持つのは
+     * 「軽いはずのテストが混雑で落ちる」ぶんだけである。
+     */
+    testTimeout: 30_000,
+  },
   build: {
     target: 'es2022',
     /**

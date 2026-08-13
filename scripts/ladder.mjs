@@ -926,21 +926,40 @@ async function measureInPage(fault) {
   //
   // **刻みを細かくするのは直し方として誤り**（§0.1 規律 9「窓は機構から導く」）。
   // 帯の幅は ULTRA で 0.01222 しかないので、0.01 刻みでも踏み損ねる。
-  // → **折れ点を列挙する。** 折れ点は `extentY = K_SPRITE/m`（m = 1…rows）に全部ある。
+  // → **折れ点を列挙する。**
+  //
+  // **折れ点の位置は `K_SPRITE/m` ではなかった**（Phase 2c-x・独立監査が二分法で実測）。
+  // `min(rows, ⌊K·s0/(extentY·s0y)⌋+1)` の折れ点なので、正しくは
+  // **`extentY = K_SPRITE · ρ / m`**（`ρ = s0/s0y = (aX·rows)/(aY·cols)`）である。
+  // `ρ = 1` は `fitGrid` がアスペクトを厳密に割り切ったときだけで、台帳の 18 セルには
+  // 1 つも無い。実測のずれは **−3.8% 〜 +0.4%**（`row1/ULTRA` の m=11 で最大）。
+  // → **両族を通す。** 旧来の `K/m` も残すのは、この訂正自体が覆ったときに気づくため。
+  //
+  // そして **2c-x の畳みは自分の折れ点を持つ** ── `rows' = round(extentY·rows)` が
+  // 1 変わる `extentY = (m+0.5)/rows` である。畳みを入れた以上、そこを通さない掃引は
+  // 「畳みが正しく段を刻んでいるか」を 1 点も見ていない。
   {
     const probe = [];
     const s2 = (() => { setup(2, 'auto'); return L.sceneStats(); })();
     const rows = s2.gridH;
+    const cols = s2.gridW;
+    // ρ = s0/s0y = (aX·rows)/(aY·cols)。`imageHalfExtents` は長辺を 1 に正規化する
+    // **1 つのスカラ**を掛けるだけなので `aX/aY = W/H` は厳密（正準の縮小でも保たれる）
+    const rho = (W * rows) / (H * cols);
     // 折れ点そのものと、その両側（`extentY = d − 1`）
     const eps = [];
     for (let m = 1; m <= rows; m++) {
-      const e = 3.85 / m;
-      if (e > 0 && e <= 1) { eps.push(e * 0.999999, e, e * 1.000001); }
+      for (const e of [(3.85 * rho) / m, 3.85 / m, (m + 0.5) / rows]) {
+        if (e > 0 && e <= 1) { eps.push(e * 0.999999, e, e * 1.000001); }
+      }
     }
-    eps.push(1e-7, 1e-4, 1e-3, 1);
+    eps.push(Number.EPSILON, 1e-7, 1e-4, 1e-3, 1);
+    let minFoldedRows = Infinity;
     for (const e of eps) {
       setup(1 + e, 'auto');
-      probe.push([1 + e, L.sceneStats().modelledAdditionDepth]);
+      const s = L.sceneStats();
+      probe.push([1 + e, s.modelledAdditionDepth]);
+      if (s.gridRowsDrawn > 0 && s.gridRowsDrawn < minFoldedRows) minFoldedRows = s.gridRowsDrawn;
     }
     // 掃引で見える範囲も併記する（0.25 刻みが何を見ていたか）
     const coarse = [];
@@ -948,7 +967,8 @@ async function measureInPage(fault) {
     let max = 0, at = 0;
     for (const [d, n] of probe) if (n > max) { max = n; at = d; }
     out.G10 = {
-      max, at, rows, closedForm: 4 * rows,
+      max, at, rows, cols, rho, closedForm: 4 * rows,
+      minFoldedRows: minFoldedRows === Infinity ? -1 : minFoldedRows,
       coarseMax: Math.max(...coarse),
       breakpoints: eps.length,
     };
@@ -1326,23 +1346,30 @@ function score(r, fault) {
    * **未修正のまま、値を固定して記録する** ── 2c-iii がティアの `dpr`/`samples` 未配線を
    * そう扱ったのと同じ形である。畳み込みで直すのは次フェーズ（§4.6）。
    */
-  record('G10', '深度の掃引が折れ点を捕まえている', `閉形式 4×${r.G10.rows} = ${r.G10.closedForm}`,
-    String(r.G10.max), r.G10.max === r.G10.closedForm,
-    `折れ点 ${r.G10.breakpoints} 点を列挙 / 最大は d=${r.G10.at.toFixed(7)}`
-    + ` / **0.25 刻みの掃引が見ていたのは ${r.G10.coarseMax}** —— 2c-iv までの G10 はこれで緑だった`);
   /**
-   * **既知の欠陥の固定。** 予算ではなく**記録値との一致**を見る ── 直ったら赤くなるし、
-   * 悪化しても赤くなる。どちらも「知らないうちに動いた」を防ぐ。
+   * **1 行目は「畳みを外したときに何が起きるか」を書く**（Phase 2c-x で書き換えた）。
+   *
+   * 2c-ix まではここが `max === 4×rows` を見ていた。畳みが入るとその等式は**偽になる**が、
+   * それは欠陥ではなく修正なので、行の主張ごと差し替える ──
+   * 見るのは「**畳まなければ `4×rows` になる帯を、掃引が実際に通っているか**」である。
+   * `foldedRows` が 1 まで落ちる点を通っていなければ、この掃引は帯を見ていない。
    */
-  const G10_RECORDED = { 236: 944, 157: 628, 315: 1260 };
-  const expected = G10_RECORDED[r.G10.rows];
-  record('G10', '**`n ≤ 512` は破れている（既知・未修正）**',
-    expected === undefined ? '(この格子の記録が無い)' : `記録値 ${expected}（> 512）`,
-    String(r.G10.max),
-    expected === undefined ? null : r.G10.max === expected,
-    `帯は d ∈ (1, 1.0301]、うち d ∈ (1, 1.0164] は ${expected} で一定。`
-    + ` §4.6 の ΔE00 表では深度 512 で 2.439 / 1024 で 5.476（予算 3.0）なので、この帯は予算の外。`
-    + ` **出荷経路からは到達不能**（\`setDimLevel\` は DEV フックからしか呼ばれない）。`);
+  record('G10', '掃引が「畳まなければ 4×rows になる帯」を通っている',
+    `畳んだ行数が 1 まで落ちる（畳まなければ 4×${r.G10.rows} = ${r.G10.closedForm}）`,
+    `最小 ${r.G10.minFoldedRows} 行`, r.G10.minFoldedRows === 1,
+    `折れ点 ${r.G10.breakpoints} 点を列挙（\`K·ρ/m\` と \`K/m\` の両族＋畳みの折れ点。ρ=${r.G10.rho.toFixed(6)}）`
+    + ` / **0.25 刻みの掃引が見ていたのは深度 ${r.G10.coarseMax}** —— 2c-iv までの G10 はこれで緑だった`);
+  /**
+   * **予算の行になった**（Phase 2c-x）。2c-v〜2c-ix はここが「記録値 944 との一致」で、
+   * **既知の欠陥を固定する**行だった（直っても悪化しても赤くなる形）。畳みで閉じたので、
+   * 記録ではなく**予算そのもの**を見る行へ戻す。
+   *
+   * 予算 512 の出所は §4.6 の ΔE00 表（深度 512 で 2.439 / 1024 で 5.476・予算 3.0）で、
+   * **この行が守っているのはその表の入口**である。
+   */
+  record('G10', '**`n ≤ 512`（畳みで閉じた）**', '≤ 512', String(r.G10.max), r.G10.max <= 512,
+    `最大は d=${r.G10.at.toFixed(7)} / 畳まなければ ${r.G10.closedForm}（4×${r.G10.rows}）。`
+    + ` **標本 6 枚 × 3 ティア = 18 セルは \`specimen.test.ts\` が node で採点する**（ここは GPU の 1 セル）。`);
 
   // ---- Phase 2b（予算は 2c-v で 0.5% → 0.2% に引き直した）----
   //

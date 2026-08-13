@@ -864,6 +864,7 @@ const EXCLUDED: readonly Excluded[] = [
   { file: 'src/tests/robustness.test.ts', table: 2, head: '符号値 | Δ色相 | Δ彩度', kind: 'iteration-cost', why: 'P3 → sRGB の色相差。この表の掃引は `color.test.ts` が別に持っている' },
   { file: 'src/tests/specimen.test.ts', table: 1, head: '標本 | 寸法 | BALANCED | HIGH | ULTRA', kind: 'iteration-cost', why: '3 ティア × 6 標本の加算深度。格子を 3 通り作り直す' },
   { file: 'src/tests/survival.test.ts', table: 1, head: 'フェーズ | 何が起きたか', kind: 'non-numeric', why: 'どのフェーズで何が配線されていなかったかの年表。数が無い' },
+  { file: 'src/tests/fold.test.ts', table: 1, head: 'ファイル | なぜ動かないか', kind: 'non-numeric', why: '既存のどのテストが畳みを見ないかの一覧。数が 1 つも無く、列は理由の文である' },
   { file: 'src/tests/widen.test.ts', table: 1, head: '演算子 | `npm test` の費用（このホスト・2 回計測） | 新しく赤になった主張', kind: 'iteration-cost', why: '`npm test` 自身の費用（10.7 倍 / 1.8 倍）。機体で変わる' },
   { file: 'src/tests/widen.test.ts', table: 2, head: '変異 | 2c-vii の機構', kind: 'iteration-cost', why: '包絡を 21 スロット × 100 位相へ広げた実測' },
   { file: 'src/tests/widen.test.ts', table: 3, head: '格子 | 費用 | 最悪 | 育った点', kind: 'iteration-cost', why: '`layout()` を挟んだときに動く `d` の掃引 1001 点。1 点あたり数百フレーム回す' },
@@ -877,7 +878,7 @@ const EXCLUDED: readonly Excluded[] = [
  * 被覆検査は「表を足したら除外を 1 行足す」で永久に通る。
  * 増やすときはこの数も同じ PR で上げること（差分に出る）。
  */
-const EXPECTED_EXCLUDED = 44;
+const EXPECTED_EXCLUDED = 45;
 
 /** **台帳のラチェット。** 減らすならこの数も同じ PR で下げること */
 const EXPECTED_LEDGER_CELLS = 96;

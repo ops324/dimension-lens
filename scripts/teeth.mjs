@@ -247,6 +247,50 @@ const MUTATIONS = [
     find: "  { file: 'src/copy.ts', table: 1, head: 'code | 実入力から到達するか', kind: 'non-numeric', why: 'エラーコードが実入力から到達するかの ✅/❌。数が無い' },\n",
     replace: '' },
 
+  // ---- Phase 2c-x（格子 y 軸の畳み）----
+  //
+  // **この 3 本は独立監査 C が実演した経路そのものである。** 2c-x を書く前の状態では、
+  // 「畳みを書いたが `rows' ≡ rows`」という**偽の実装**が今日の出荷とビット一致し
+  // （位置 0 / 2,677,944 要素・`stats()` 0 / 364 値が相違）、`npm test` 447 件・
+  // 台帳 57 本・`ladder --structural` が**全部緑のまま通った**。
+  // つまり畳みは、歯を足さないかぎり 1 つも守られない。
+
+  // (1) 畳みそのもの。外すと No.0 系 12 セル（6 標本 × 3 ティアのうち）が 512 超へ戻る
+  { phase: '2c-x', name: '格子の y を畳まない（`n ≤ 512` が標本 12/18 セルで破れる）', observed: 3,
+    file: 'src/image/grid.ts',
+    find: '  const n = Math.round(extentY * max);\n  if (n < 1) return 1;',
+    replace: '  const n = max;\n  if (n < 1) return 1;' },
+
+  // (2) `rows/2` の柵。外すと帯が 1 行しか含まない範囲まで畳み、畳みが間引きになる。
+  // 実測（実 GPU・標本 No.0・HIGH）: `d ≥ 1.55` で ΔE00 最大 19.449・灯った画素の 1.9% が
+  // 予算 3.0 超。**しかも深度はそこでは 28 で、畳む利得はゼロである。**
+  { phase: '2c-x', name: '帯が 1 行になっても畳む（畳みが間引きへ変わる範囲を開ける）', observed: 1,
+    file: 'src/image/grid.ts',
+    find: '  return 2 * n > max ? max : n;',
+    replace: '  return n;' },
+
+  // (3) **`spacingY` の入れ忘れ。** 監査 C がいちばん重い穴として実演した経路で、
+  // 雲が `1/(d−1)` 倍暗く出る（`d ∈ (1,2]` の 1039 点中 618 点で −50% 超・最悪 −90.12%）。
+  // `extentY = 1` では `1 · rows / rows` が厳密 1 なので**アンカーの `x/x` は保たれ**、
+  // ラダーの `G7 sampleWeight (d=2)` も `Object.is(…, 1)` で緑のまま通る。
+  { phase: '2c-x', name: '潰しの補正に畳んだ間隔を渡さない（雲が最大 9.6 倍暗くなる）', observed: 1,
+    file: 'src/scene/lensScene.ts',
+    find: '      ? (this.extent[1] * this.source.grid.rows) / Math.max(1, this.gridRows)',
+    replace: '      ? this.extent[1]' },
+
+  // (4) **畳みが平均であること。** 帯の上端 1 行だけを採ると畳みは間引きになる。
+  // 実測（独立監査 B・標本 No.0・`rows' = 1`）: 間引きは ΔE00 **49.3069**・
+  // **378 点すべて**が予算 3.0 超・相対輝度誤差 288.4%。帯平均は 0.0333 / 0.1331%。
+  //
+  // **「リニア光で平均するか、正規化 Oklab で平均するか」には歯を置けていない。**
+  // 実測では 5〜6 桁違う（Oklab 平均は ΔE00 8.2152 / 輝度誤差 30.59%）が、
+  // その差を作る変異は `linearToOklab` の呼び出し位置を動かす構造変更になり、
+  // `find`/`replace` の 1 対 1 では書けない。**歯が無いことを書いておく**（§7.10 の型 1）。
+  { phase: '2c-x', name: '畳みの帯を 1 行にする（平均が間引きへ変わる）', observed: 1,
+    file: 'src/scene/lensScene.ts',
+    find: '      const y1 = Math.max((((j + 1) * rows) / ny) | 0, y0 + 1);',
+    replace: '      const y1 = y0 + 1;' },
+
   // ---- Phase 2c-vi（配線の生存の行列）----
   //
   // 線を描いていないフレームで線バッファの最後の状態を漏らす。`rebuildLine` は `!grid` の
@@ -466,7 +510,7 @@ function ranTests(out) {
  * 3 つ組が既存と一致する変異は、本数だけ増やして守るものを増やさない。
  * 下の重複検査が機械で見る。
  */
-const EXPECTED_MUTATIONS = 57;
+const EXPECTED_MUTATIONS = 61;
 
 if (MUTATIONS.length < EXPECTED_MUTATIONS) {
   console.error(
@@ -518,6 +562,10 @@ const EXPECTED_IDS = [
   '2c-ix / doc の表の数を 1 つ書き換える（台帳が doc を読んでいるかの確認） → src/image/halfFloat.ts',
   '2c-ix / 飽和天井の丸めを切り下げにする（2048·δ 以上でなくなる） → src/image/halfFloat.ts',
   '2c-ix / 除外表から 1 行消す（被覆検査 ── 表を足しても黙って通る形へ戻す） → src/tests/docLedger.test.ts',
+  '2c-x / 格子の y を畳まない（`n ≤ 512` が標本 12/18 セルで破れる） → src/image/grid.ts',
+  '2c-x / 帯が 1 行になっても畳む（畳みが間引きへ変わる範囲を開ける） → src/image/grid.ts',
+  '2c-x / 潰しの補正に畳んだ間隔を渡さない（雲が最大 9.6 倍暗くなる） → src/scene/lensScene.ts',
+  '2c-x / 畳みの帯を 1 行にする（平均が間引きへ変わる） → src/scene/lensScene.ts',
   '2c-vi / 描いていない線の点数を漏らす（キャッシュが観測面へ出る） → src/scene/lensScene.ts',
   '2b / fp16 の丸めを最近接に取り違える（監査のモデルへ戻す） → src/image/blendModel.ts',
   '2b / 最近接偶数を「常に上へ」にする（ties-to-even を落とす） → src/image/blendModel.ts',
@@ -625,7 +673,7 @@ const EXPECTED_IDS = [
  * これで「締めて下げる」の原資が無くなる。**ただし塞いだのは原資であって経路ではない**
  * ── 実測が本当に増えた PR では、また同じことができる。
  */
-const EXPECTED_OBSERVED_TOTAL = 143;
+const EXPECTED_OBSERVED_TOTAL = 149;
 
 {
   const bad = MUTATIONS.filter((m) => !Number.isInteger(m.observed) || m.observed < 1);

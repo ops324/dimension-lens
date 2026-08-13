@@ -60,3 +60,48 @@ export type TierName = keyof typeof TIER_BUDGET;
 
 /** 正準バッファの長辺上限。列平均バッファ(Phase 1b)の点数上限でもある */
 export const MAX_CANONICAL_EDGE = 2048;
+
+/**
+ * その `extentY` で**実際に描く格子の行数**（Phase 2c-x）。`effectiveLineCount` の y 軸版。
+ *
+ * ## 何を直しているのか
+ *
+ * 格子経路（`dimLevel > 1`）は畳みを一切通らなかった（`lensScene` は `!grid` のときしか
+ * `rebuildLine` を呼ばない）。`extentY → 0⁺` では `rows` 行が画面上で重なり、
+ * 加算深度が `min(cols, ⌊K/extentX⌋+1) × min(rows, ⌊K·ρ/extentY⌋+1)` の右側で
+ * `rows` に張り付いて **`4 × rows`** になる（HIGH 944 / 予算は `n ≤ 512`。§4.6.1）。
+ *
+ * 規則は x 側と同じ ── **画面上の間隔が `s0y` を保つ行数まで減らす**:
+ *
+ * ```
+ * 画面間隔 = extentY · s0y · rows / n   を  s0y  に等しくしたい  ⟹  n = extentY · rows
+ * ```
+ *
+ * `extentY = 1`（`dimLevel = 2` のアンカー）では `n = rows` に**厳密に戻る**ので、
+ * アンカーの絵は 1 ビットも動かない（`collapseWeight` が `x/x` になる）。
+ *
+ * ## `rows/2` より上では畳まない —— 畳みではなく**間引き**になるから
+ *
+ * 帯の境界は `lift` と同じ `floor` の厳密分割なので、`n > rows/2` になると
+ * **源の行を 1 本しか含まない帯が現れる**（実測: `rows = 236` では `n = 119` から。
+ * `wide` の `rows = 74` では `n = 38` から）。そこから先の「畳み」は平均ではなく
+ * **どの行を捨てるかの選択**で、x 側の `effectiveLineCount` が行っている操作とは別物である。
+ *
+ * そして**その帯に畳む理由が無い**: `n > rows/2` ⟺ `extentY > 0.5` では
+ * `⌊K·ρ/extentY⌋+1 ≤ 8` なので、畳まなくても深度は `4 × 8 = 32` で予算の内側にある。
+ *
+ * 実測（実 GPU・標本 No.0・HIGH・畳まない絵との差）: `d ≥ 1.55` を畳むと
+ * ΔE00 が最大 **19.449**、灯った画素の **1.9%** が予算 3.0 を超える ── **利得ゼロで**。
+ * 畳まなければその帯は**ビット単位で従来と同一**（実測 0.000 / 0 画素）。
+ *
+ * → **帯が 2 行以上を平均できるあいだだけ畳む。** 条件は `2n ≤ rows`。
+ */
+export function effectiveRowCount(extentY: number, rows: number): number {
+  const max = Math.max(1, Math.floor(rows));
+  if (!Number.isFinite(extentY) || extentY >= 1) return max;
+  if (!(extentY > 0)) return 1;
+  const n = Math.round(extentY * max);
+  if (n < 1) return 1;
+  // 帯が 1 行しか含まなくなったら畳まない（畳みではなく間引きになる）
+  return 2 * n > max ? max : n;
+}
