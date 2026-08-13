@@ -98,7 +98,7 @@ import {
   framingEnvelope,
 } from '../core/framingEnvelope';
 import { DEFAULT_FILL, needDistance } from '../core/fit';
-import { makeSpecimen0 } from '../image/fixture';
+import { makeHueSweep, makeSpecimen0, makeWideStrip } from '../image/fixture';
 import { linearizeRgba } from '../image/linearize';
 import { computeScales, computeStats } from '../image/stats';
 import { TIER_BUDGET, fitGrid } from '../image/grid';
@@ -153,9 +153,22 @@ const isRowLine = (t: string | null): t is string =>
 const isSepLine = (t: string | null): boolean =>
   isRowLine(t) && /^\|[\s:|-]+\|$/.test(t) && t.includes('-');
 
-/** `| a | b |` を `['a', 'b']` へ。**両端の空セルだけを落とす**（中の空セルは残す） */
+/**
+ * `| a | b |` を `['a', 'b']` へ。**両端の空セルだけを落とす**（中の空セルは残す）。
+ *
+ * **バッククォートの中の `|` は区切りにしない。** `core/fit.ts` の `max|x|` や
+ * `framingEnvelope.ts` の `|{n ≥ 0.99·max}|` を素朴に割ると列がずれ、
+ * **位置で照合するこの機構が別の列を採点する**（2c-ix で自分の doc を足して踏んだ）。
+ */
 function splitCells(t: string): string[] {
-  const parts = t.split('|');
+  const parts: string[] = [];
+  let cur = '';
+  let code = false;
+  for (const c of t) {
+    if (c === '`') code = !code;
+    if (c === '|' && !code) { parts.push(cur); cur = ''; } else cur += c;
+  }
+  parts.push(cur);
   parts.shift();
   parts.pop();
   return parts.map((c) => c.trim());
@@ -354,6 +367,34 @@ function specimen() {
 
 const ALL_PRESENT = [true, true, true, true, true];
 const extentScratch = new Float64Array(5);
+
+/** 台帳の標本を HIGH 格子へ持ち上げる。**`framingEnvelope.test.ts` と同じ作り方** */
+const SPECIMENS = [makeSpecimen0, makeHueSweep, makeWideStrip];
+
+function liftedOf(i: number) {
+  const s = SPECIMENS[i]();
+  const canonical = linearizeRgba(s.rgba, s.width, s.height, 'srgb');
+  const scales = computeScales(computeStats(canonical));
+  const grid = fitGrid(canonical.width, canonical.height, TIER_BUDGET.HIGH);
+  return { lifted: makeLiftPayload(canonical, grid, scales), grid };
+}
+
+/** `|{n ≥ 0.99·max}|` ── doc が「予測子になる」と書いている量 */
+function flatTopCount(a: Args): number {
+  const { lifted, grid } = liftedOf(a.specimen);
+  const count = grid.cols * grid.rows;
+  const norms = new Float64Array(count);
+  let max = 0;
+  for (let i = 0; i < count; i++) {
+    let n2 = 0;
+    for (let k = 0; k < 5; k++) { const v = lifted.base[i * 5 + k]; n2 += v * v; }
+    norms[i] = Math.sqrt(n2);
+    if (norms[i] > max) max = norms[i];
+  }
+  let c = 0;
+  for (let i = 0; i < count; i++) if (norms[i] >= 0.99 * max) c++;
+  return c;
+}
 
 /**
  * 包絡そのものを memo する。**純関数なので値は 1 ビットも変わらない**が、
@@ -608,6 +649,37 @@ const LEDGER: readonly LedgerEntry[] = [
   },
   {
     file: 'src/core/framingEnvelope.ts',
+    table: 6,
+    head: '標本 | doc の `|{n ≥ 0.99·max}|` | 台帳で測り直すと | 格子',
+    what: '引用された 3 標本の予測子を `SPECIMEN_LEDGER` で測り直す（2c-ix が足した表）',
+    fn: ['makeSpecimen0', 'makeHueSweep', 'makeWideStrip', 'fitGrid', 'makeLiftPayload'],
+    skipCols: {
+      0: '標本の名前 ── **この表の引数**である',
+      1: '**復元できない数**（引用された 3 標本が repo に無い・型 3）。'
+        + 'この列が再現しないことがこの表の主張なので、採点すると主張が消える',
+    },
+    cells: [0, 1, 2].flatMap((row) => [
+      { row, col: 2, args: { specimen: row }, discrete: { specimen: [0, 1, 2] }, compute: flatTopCount },
+      {
+        row,
+        col: 3,
+        pick: 0,
+        args: { specimen: row },
+        discrete: { specimen: [0, 1, 2] },
+        compute: (a: Args) => liftedOf(a.specimen).grid.cols,
+      },
+      {
+        row,
+        col: 3,
+        pick: 1,
+        args: { specimen: row },
+        discrete: { specimen: [0, 1, 2] },
+        compute: (a: Args) => liftedOf(a.specimen).grid.rows,
+      },
+    ]),
+  },
+  {
+    file: 'src/core/framingEnvelope.ts',
     table: 3,
     head: 'M | need | 収束値との比 | 費用',
     what: '掃く位相 M を増やしたときの `need` の収束',
@@ -748,9 +820,9 @@ const EXCLUDED: readonly Excluded[] = [
   { file: 'src/core/framingEnvelope.ts', table: 1, head: '経過（gate 時間） | カメラ距離', kind: 'iteration-cost', why: 'ブラウザで実時間 300 秒掃いたカメラ距離。実測ログ' },
   { file: 'src/core/framingEnvelope.ts', table: 2, head: 'd | `aX` の argmax を外した位相 | 外したときの最悪比', kind: 'iteration-cost', why: '`aX` の argmax を外した位相の比。512 位相 × 6 スロットを全点で取り直す' },
   { file: 'src/core/framingEnvelope.ts', table: 5, head: '標本 | d | `need` の比', kind: 'historical', why: '**引用された 3 標本が repo に無い**（型 3・§7.10）。`SPECIMEN_LEDGER` の同名標本は別物' },
-  { file: 'src/core/framingEnvelope.ts', table: 6, head: 'K | 横長 `d=5` の `need` 比 | 1 スロット | 21 スロット', kind: 'iteration-cost', why: 'K を 8192 まで上げる表。1 スロット 1,634 ms × 21 スロット = 34 s' },
-  { file: 'src/core/framingEnvelope.ts', table: 7, head: '標本 | d | 成分 | M=4096 | M=65536 | 本物か', kind: 'iteration-cost', why: '`d` を 0.005 刻みで 1001 点掃いた表（M = 65536 込み）' },
-  { file: 'src/core/framingEnvelope.ts', table: 8, head: '標本 | 下回った点 | 最悪 | 不足', kind: 'iteration-cost', why: '`envelopeFor` が厳密値を下回る点。0.005 刻み 1001 点 × 6 標本で、1 セルあたり 28〜32 秒' },
+  { file: 'src/core/framingEnvelope.ts', table: 7, head: 'K | 横長 `d=5` の `need` 比 | 1 スロット | 21 スロット', kind: 'iteration-cost', why: 'K を 8192 まで上げる表。1 スロット 1,634 ms × 21 スロット = 34 s' },
+  { file: 'src/core/framingEnvelope.ts', table: 8, head: '標本 | d | 成分 | M=4096 | M=65536 | 本物か', kind: 'iteration-cost', why: '`d` を 0.005 刻みで 1001 点掃いた表（M = 65536 込み）' },
+  { file: 'src/core/framingEnvelope.ts', table: 9, head: '標本 | 下回った点 | 最悪 | 不足', kind: 'iteration-cost', why: '`envelopeFor` が厳密値を下回る点。0.005 刻み 1001 点 × 6 標本で、1 セルあたり 28〜32 秒' },
   { file: 'src/image/blendModel.ts', table: 1, head: 'モデル | 仮定 | `blendF32` / `blendF16` / `blendF16FlushSource`', kind: 'non-numeric', why: '3 つのモデルの仮定を並べた対照表。数が 1 つも無く、列は文である' },
   { file: 'src/image/columnLine.ts', table: 1, head: '入力（同一幾何・深度 378） | 位相を除いた残差', kind: 'gpu-browser', why: '位相を除いた残差。実 GPU の加算合成の読み戻しで、node では作れない' },
   { file: 'src/image/spriteGain.ts', table: 1, head: 's0 | S = k·s0 | gainFor | 誤差', kind: 'historical', why: '`gainFor` の**クランプを入れる前**の式の値。現在の export では `MIN_CALIBRATED_S0` で潰れる（写経すると `x/x`）' },
@@ -791,7 +863,7 @@ const EXCLUDED: readonly Excluded[] = [
 const EXPECTED_EXCLUDED = 44;
 
 /** **台帳のラチェット。** 減らすならこの数も同じ PR で下げること */
-const EXPECTED_LEDGER_CELLS = 87;
+const EXPECTED_LEDGER_CELLS = 96;
 
 /**
  * 採点したセルの **doc 側の表記桁の総和**。桁を落とすと許容が緩むので、ここもラチェットにする。
