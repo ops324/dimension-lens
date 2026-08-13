@@ -30,6 +30,12 @@
  *   3. **宣言した引数を 1 つずつ揺らし、doc の表記桁を超えて動くことを要求する。**
  *      動かない引数は `inert` に書かせる（**飾りで書いた引数を差分に出す**）。
  *      `inert` の側も機械が検証する ── 動いてしまう引数を `inert` と書けば赤になる
+ * **「比だから約分される」は 3 引数について偽だった**（2c-ix で機械が捕まえた）──
+ * `needDistance` は `max(aY/band, aX/aspect)/(fill·t) + zHi` で、**`zHi` の項が
+ * `fill` にも `fovDeg` にも `bandFrac` にも掛からない**。比を取っても消えるのは
+ * `viewportAspect` だけ（縦側が勝っている領域で、そもそも式に現れないため）である。
+ * 私は 5 つとも `inert` と書き、**`inert` の側の検証が 12 セルで赤にした**。
+ *
  *   4. **許容は doc の表記桁から機械が決める。** 人が `tol` を置くと、締めれば偽の赤・
  *      緩めれば包含照合になる。ここでは**計算値を doc と同じ桁へ丸めた文字列**が
  *      一致することを要求する（＝ 表記桁ちょうどの許容。同値の丸めも機械の側で決まる）
@@ -112,6 +118,8 @@ interface DocTable {
   readonly header: readonly string[];
   /** 区切り行より下のデータ行。各行はセルの配列 */
   readonly rows: readonly (readonly string[])[];
+  /** 表の直上のコメント 12 行。**doc が関数名を名乗っているか**を見るために持つ */
+  readonly preamble: string;
 }
 
 /**
@@ -153,6 +161,27 @@ function splitCells(t: string): string[] {
   return parts.map((c) => c.trim());
 }
 
+/**
+ * **緩い定義**（区切り行を要求しない）。厳しい定義と本数が違ったら赤にするために持つ。
+ *
+ * 走査器が 1 つだと、**走査器に見えない表を書けば被覆検査を素通りできる** ──
+ * 区切り行を `|:::|` にする、`-` を全角にする、といった 1 文字で足りる。
+ * 2 つの独立な定義の**本数が一致すること**を要求すると、その道は差分に出る
+ * （2c-ix が自分で見つけた穴。監査の指摘ではない）。
+ */
+function looseTableCount(src: string): number {
+  const cl = commentText(src);
+  let n = 0;
+  for (let k = 0; k < cl.length; k++) {
+    if (!isRowLine(cl[k])) continue;
+    let e = k;
+    while (e + 1 < cl.length && isRowLine(cl[e + 1])) e++;
+    if (e - k + 1 >= 2) n++;
+    k = e;
+  }
+  return n;
+}
+
 function tablesIn(file: string, src: string): DocTable[] {
   const cl = commentText(src);
   const out: DocTable[] = [];
@@ -167,6 +196,7 @@ function tablesIn(file: string, src: string): DocTable[] {
         line: k + 1,
         header: splitCells(cl[k] as string),
         rows: cl.slice(k + 2, e + 1).map((l) => splitCells(l as string)),
+        preamble: cl.slice(Math.max(0, k - 12), k).map((l) => l ?? '').join('\n'),
       });
     }
     k = e;
@@ -184,12 +214,12 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 const ROOT = process.cwd();
-const CORPUS: DocTable[] = walk(join(ROOT, 'src'))
-  .sort()
-  .flatMap((abs) => {
-    const rel = relative(ROOT, abs).split('\\').join('/');
-    return tablesIn(rel, readFileSync(abs, 'utf8'));
-  });
+const SRC_FILES = walk(join(ROOT, 'src')).sort();
+const CORPUS: DocTable[] = SRC_FILES.flatMap((abs) => {
+  const rel = relative(ROOT, abs).split('\\').join('/');
+  return tablesIn(rel, readFileSync(abs, 'utf8'));
+});
+const LOOSE_COUNT = SRC_FILES.reduce((a, abs) => a + looseTableCount(readFileSync(abs, 'utf8')), 0);
 
 // ------------------------------------------------------------ セルの数値化と桁
 
@@ -265,18 +295,35 @@ interface LedgerCell {
   readonly discrete?: Readonly<Record<string, readonly number[]>>;
 }
 
-interface LedgerEntry {
+interface TableRef {
   readonly file: string;
   /** そのファイルの中で何番目の表か（1 始まり） */
   readonly table: number;
+  /**
+   * その表のヘッダ行（`|` で割ったものを ' | ' で繋いだもの）。
+   *
+   * **添字だけだと、表を 1 つ挿しただけで全部の指し先が黙ってずれる**
+   * （独立監査が実演した X6）。ヘッダを照合すると、ずれたその場で赤になる。
+   */
+  readonly head: string;
+}
+
+interface LedgerEntry extends TableRef {
   readonly what: string;
+  /**
+   * **doc の側が名乗っている関数名**（表の直上 12 行または見出しに現れること）。
+   *
+   * これが無いと、台帳は「どの関数の表か」を**自分の側にしか持たない** ──
+   * `halfFloat` の n 表は `Float16Array`（最近接）製で、実機の `f16AccumulateTruncate`
+   * では n=512 が 0.193604（doc 0.205200）になる。**doc が RN の表だと言っていない限り、
+   * 実機で成り立つかは 1 ミリも問われない**（独立監査の X5）。
+   */
+  readonly fn: readonly string[];
   readonly cells: readonly LedgerCell[];
   /** 採点しないデータ行（位置 → 理由）。**黙って飛ばさない** */
   readonly skipRows?: Readonly<Record<number, string>>;
   /** 採点しない列（位置 → 理由） */
   readonly skipCols?: Readonly<Record<number, string>>;
-  /** 感度検査に使うセルの位置（既定 0）。**いちばん安いセルを指す** */
-  readonly sensitivityCell?: number;
 }
 
 // ------------------------------------------------------- 標本（包絡の表のため）
@@ -327,10 +374,17 @@ function envelopeOf(a: Args) {
   return env;
 }
 
-/** `need`（＝ `needDistance ∘ framingEnvelope`）。**引数を 1 つも隠さない** */
+/**
+ * `need`（＝ `needDistance ∘ framingEnvelope`）。**引数を 1 つも隠さない。**
+ *
+ * `bandFrac` / `fovDeg` / `fill` は当初この関数の中に**閉じ込めて**いた。
+ * 独立監査が「`fill` を 0.86 → 0.95 にすると `need` が 6.869252 → 6.401687 動くのに、
+ * 宣言外なので感度検査の対象にならない」を実演した ──
+ * **閉包に隠した引数は、台帳が「引数を書かせる機構」であることを裏切る。**
+ */
 function envelopeNeed(a: Args): number {
   return needDistance(
-    { aX: 0, aY: 0, viewportAspect: a.viewportAspect, bandFrac: 1, fovDeg: CAMERA_FOV, fill: DEFAULT_FILL },
+    { aX: 0, aY: 0, viewportAspect: a.viewportAspect, bandFrac: a.bandFrac, fovDeg: a.fovDeg, fill: a.fill },
     envelopeOf(a),
   );
 }
@@ -346,49 +400,93 @@ function envelopeConvergence(a: Args): number {
 const TARGET_128 = srgbToLinear(128 / 255);
 
 const HALF_FLOAT_TARGET = { target: TARGET_128 } as const;
-const ASPECT_988_778 = 988 / 778;
+/** 包絡の表を測った viewport（`lensScene` の既定 1 ではない）。**これが型 5 の当の前提** */
+const ENVELOPE_FRAME = {
+  viewportAspect: 988 / 778,
+  bandFrac: 1,
+  fovDeg: CAMERA_FOV,
+  fill: DEFAULT_FILL,
+  candidates: ENVELOPE_CANDIDATES,
+} as const;
+
+/**
+ * 収束「比」の列で、引数が**ほぼ**約分される理由。
+ *
+ * **「比だから約分される」は偽だった**（2c-ix・機械が 12 セルで赤にした）──
+ * `needDistance` は `max(aY/band, aX/aspect)/(fill·t) + zHi` で、
+ * **`zHi` の項は `fill` にも `fovDeg` にも `bandFrac` にも掛からない**。
+ * 完全に消えるのは `viewportAspect` だけ（縦側が勝つ領域では式に現れない）。
+ * 残りは「消える」ではなく「**doc の表記桁の下に隠れる**」であり、
+ * **桁が 1 つ増えれば効く側へ移る**。この機構の許容が著者の印字桁で決まることの実例である。
+ */
+const RATIO_RESIDUE = (measured: string) =>
+  '比を取っても `zHi` の項だけは約分されない。残差は doc の表記桁の下に隠れる'
+  + `（${measured}）── **桁が 1 つ増えればこの引数は「効く」側へ移る**`;
+
+/** doc の印字桁ではモデルが分かれない `行:モデル` の組（実測して埋めた） */
+const MODEL_BLIND_CELLS = new Set(['0:0', '0:1', '0:2', '0:3', '1:1', '1:2', '1:3', '2:2']);
 
 const LEDGER: readonly LedgerEntry[] = [
   {
     file: 'src/image/halfFloat.ts',
     table: 1,
+    head: 'δ | 実測停止値 | `2048·δ` | 直上の 2 冪',
     what: '`A + δ` が丸め戻って停止する値（`2048·δ` 以上の最小の 2 冪）',
+    fn: ['f16SaturationCeiling'],
     skipCols: {
       0: 'δ そのもの ── **この表の引数**である。ここを採点すると `x/x` になる',
+      2: '`2048·δ` は doc が書いた式の再掲で、**`src/` の関数を 1 つも呼ばない** ── '
+        + '台帳の側で掛け算を書けば必ず一致する（独立監査の X9）。採点せずに数える',
       3: '「直上の 2 冪か」の ✓ で、数ではない',
     },
-    cells: [0, 1, 2, 3, 4].flatMap((row) => {
+    cells: [0, 1, 2, 3, 4].map((row) => {
       const delta = [2 ** -20, 2 ** -16, 1.53e-5, 1e-3, 1][row];
-      return [
-        { row, col: 1, args: { delta }, compute: (a: Args) => f16SaturationCeiling(a.delta) },
-        { row, col: 2, args: { delta }, compute: (a: Args) => 2048 * a.delta },
-      ];
+      return { row, col: 1, args: { delta }, compute: (a: Args) => f16SaturationCeiling(a.delta) };
     }),
   },
   {
     file: 'src/image/halfFloat.ts',
     table: 2,
+    head: 'n | 合計 | 誤差',
     what: '目標値を n 等分して half-float へ足したときの合計と相対誤差（最近接丸め）',
+    fn: ['f16Accumulate', 'f16RelativeError', 'srgbToLinear'],
     skipCols: { 0: 'n そのもの ── **この表の引数**である' },
-    cells: [256, 378, 489, 512, 2048, 3537, 89208].flatMap((n, row) => [
-      {
-        row,
-        col: 1,
-        args: { ...HALF_FLOAT_TARGET, n },
-        compute: (a: Args) => f16Accumulate(a.target, a.n),
-      },
-      {
-        row,
-        col: 2,
-        args: { ...HALF_FLOAT_TARGET, n },
-        compute: (a: Args) => f16RelativeError(a.target, a.n) * 100,
-      },
-    ]),
+    cells: [256, 378, 489, 512, 2048, 3537, 89208].flatMap((n, row) => {
+      // **最後の行は天井で停止している**（doc がそう書いている）。停止値は
+      // 「`2048·δ` 以上の最小の 2 冪」なので、目標も n も 25% 動かすだけでは
+      // 同じ 2 冪に留まる ── **この行だけ、両方の引数が印字桁に効かない**
+      const saturated = n === 89208
+        ? {
+            target: '天井（`2048·δ` 以上の最小の 2 冪）で停止しているので、'
+              + '目標を 25% 動かしても同じ 2 冪に留まる ── **停止していることの現れ**である',
+            n: '同上。天井は n に依らない（この節の初版が「停止点は n に依らない」と'
+              + '書いたのは、後半だけは真だった）',
+          }
+        : undefined;
+      return [
+        {
+          row,
+          col: 1,
+          args: { ...HALF_FLOAT_TARGET, n },
+          inert: saturated,
+          compute: (a: Args) => f16Accumulate(a.target, a.n),
+        },
+        {
+          row,
+          col: 2,
+          args: { ...HALF_FLOAT_TARGET, n },
+          inert: n === 89208 ? { n: saturated!.n } : undefined,
+          compute: (a: Args) => f16RelativeError(a.target, a.n) * 100,
+        },
+      ];
+    }),
   },
   {
     file: 'src/image/halfFloat.ts',
     table: 3,
+    head: '深度 n | RN の誤差（旧） | **RTZ の誤差（実機）** | **RTZ の ΔE00** | 旧 ΔE00',
     what: '深度ごとの丸め誤差（最近接 / 実機の 0 方向切り捨て）と ΔE00',
+    fn: ['f16Accumulate', 'f16AccumulateTruncate', 'deltaE2000'],
     skipCols: {
       0: '深度 n そのもの ── **この表の引数**である',
       4: '**旧 ΔE00 は現在の export で再現しない。** Phase 1b の予算表からの転記で、'
@@ -422,10 +520,9 @@ const LEDGER: readonly LedgerEntry[] = [
   {
     file: 'src/image/blendModel.ts',
     table: 2,
+    head: 'ケース | 実測 | f32 | fp16 RN | fp16+切り捨て | **fp16 RTZ**',
     what: '規定した値の並びを 4 つのモデルで積んだ結果',
-    // 行 2（`subnormal-tail`）はモデルが 4 つとも割れる。行 0（`selftest-exact`）は
-    // **全モデルが一致するように作られた自己検査**なので、感度検査の witness にできない
-    sensitivityCell: 8,
+    fn: ['blendF32', 'blendF16', 'blendF16FlushSource', 'blendF16TruncateToZero'],
     skipCols: {
       0: 'ケース名（数ではない）',
       1: 'GPU の読み値（`blendProbe`）── node では再現できない。'
@@ -437,6 +534,19 @@ const LEDGER: readonly LedgerEntry[] = [
         col: 2 + mi,
         args: { caseIndex: row, model: mi },
         discrete: { caseIndex: [0, 1, 2, 3, 4, 5], model: [0, 1, 2, 3] },
+        // **doc の印字桁でモデルが分かれないセル**を明示する。
+        // 行 0（`selftest-exact`）は**全モデルが一致するように作られた自己検査**なので
+        // 4 セルとも。行 1（`f16-vs-f32`）は fp16 の 3 モデルが同値で、doc が
+        // その列を 1 桁（`1.0`）でしか印字していない。行 2 の `f16-flush` は
+        // doc が `0` と 0 桁で印字しているので、0.031 の差が桁の下に隠れる。
+        // → **「この表のこのセルはモデルを判別していない」を台帳の側に書く。**
+        inert: MODEL_BLIND_CELLS.has(`${row}:${mi}`)
+          ? {
+              model: 'doc の印字桁ではモデルが分かれないセル（行 0 は全モデル一致の自己検査、'
+                + '行 1 の fp16 3 モデルは同値、行 2 の `f16-flush` は 0 桁印字）。'
+                + '**このセルは「どのモデルか」を 1 ビットも判別していない**',
+            }
+          : undefined,
         compute: (a: Args) => BLEND_MODELS[a.model].run(blendCases()[a.caseIndex].values),
       })),
     ),
@@ -444,23 +554,30 @@ const LEDGER: readonly LedgerEntry[] = [
   {
     file: 'src/image/spriteGain.ts',
     table: 4,
+    head: 'ティア | 格子 | `A(unbounded)` | `A(n)` | `sampleWeight`',
     what: '基準を無限格子に取ると、アンカーの厳密 1 がティアで崩れる',
+    fn: ['axisCoverage', 'K_SPRITE'],
     skipCols: { 0: 'ティア名', 1: '格子の寸法（引数）' },
     cells: ([
       ['HIGH', 2.2478, 378],
       ['BALANCED', 3.3851792828685254, 251],
     ] as const).flatMap(([, s0, n], row) => {
-      const inert = {
-        s0: '`axisCoverage` は `spritePx/s0 = K_SPRITE` にしか依らない（尺度不変）── '
-          + 'ティアの差は最終 ulp だけである。**それがこの表の主張そのもの**',
-        n: 'スプライトは ±2 セルしか届かないので、`n` を増やしても最終 ulp しか動かない',
-      };
+      // **HIGH の行だけ厳密に動かない。** BALANCED の行では `s0` も `n` も
+      // **1〜2 ulp（2.2e−16 / 4.4e−16）動き、doc が 16 桁印字しているので効く側**になる。
+      // それがこの表の主張そのものである ──「HIGH で厳密 1 だったのは数値の偶然」。
+      const SCALE_FREE = '`axisCoverage` は `spritePx/s0 = K_SPRITE` にしか依らない（尺度不変）── '
+        + 'HIGH の行では s0 を 25% 動かしても **Δ = 0（厳密）**。BALANCED の行では '
+        + '**1〜2 ulp（2.2e−16 / 4.4e−16）動く**ので効く側になる ── '
+        + '**「HIGH で厳密 1 だったのは数値の偶然」というこの表の主張そのもの**である';
+      const REACH = 'スプライトは ±2 セルしか届かないので、HIGH では `n` を増やしても Δ = 0';
+      const UNBOUNDED_COL = 'この列は `AXIS_UNBOUNDED` を渡すので、**そもそも `n` を読まない**';
+      const inert = row === 0 ? { s0: SCALE_FREE, n: REACH } : undefined;
       return [
         {
           row,
           col: 2,
           args: { s0, n },
-          inert,
+          inert: { ...inert, n: UNBOUNDED_COL },
           compute: (a: Args) => axisCoverage(a.s0, AXIS_UNBOUNDED, K_SPRITE * a.s0),
         },
         {
@@ -492,44 +609,69 @@ const LEDGER: readonly LedgerEntry[] = [
   {
     file: 'src/core/framingEnvelope.ts',
     table: 3,
+    head: 'M | need | 収束値との比 | 費用',
     what: '掃く位相 M を増やしたときの `need` の収束',
-    sensitivityCell: 0, // M = 256 の行。**いちばん安いセルを指す**
+    fn: ['needDistance', 'framingEnvelope'],
     skipCols: {
       0: 'M そのもの ── **この表の引数**である',
       3: '費用（ms）── 機体で変わる量なので採点しない（§7.9.2.1）',
     },
-    skipRows: {},
     cells: [
       ...[256, 1024, 4096, 16384, 65536].map((M, row) => ({
         row,
         col: 1,
-        args: {
-          dimLevel: 3,
-          phaseCount: M,
-          viewportAspect: ASPECT_988_778,
-          candidates: ENVELOPE_CANDIDATES,
-        },
+        args: { ...ENVELOPE_FRAME, dimLevel: 3, phaseCount: M },
         inert: {
           candidates:
             '候補を 32 から増やしても包絡は 6 桁動かない（この表の直下がそう書いている）── '
             + '**標本 No.0 の性質**であって一般には成り立たない（`ENVELOPE_CANDIDATES` の項）',
+          // **この行が独立監査の X12 そのものである。**
+          ...(M >= 4096
+            ? {
+                viewportAspect:
+                  `M = ${M} では包絡の \`aX/aY\` が 1.0045 しかないので、`
+                  + '`needDistance` の `max(aY/band, aX/aspect)` は縦側で決まり、'
+                  + '**アスペクトを 1.0045 より上で動かしても 1 ビットも変わらない**。'
+                  + '→ **出荷している `ENVELOPE_PHASES = 4096` を正当化している行では、'
+                  + '台帳は `viewportAspect` の欠落を原理的に捕まえられない**（M = 256 の行だけが捕まえる）',
+              }
+            : {}),
+          // **doc がこの行に「―（収束）」と書いている当のこと**
+          ...(M === 65536
+            ? {
+                phaseCount:
+                  'この行が「収束」と書いている当のこと ── M を ±25% 動かしても'
+                  + '印字桁（4 桁）では 3.1e−5 しか動かない。**収束の主張は、'
+                  + 'この引数が効かなくなったことそのもの**である',
+              }
+            : {}),
         },
         compute: envelopeNeed,
       })),
       ...[256, 1024, 4096, 16384].map((M, row) => ({
         row,
         col: 2,
-        args: {
-          dimLevel: 3,
-          phaseCount: M,
-          viewportAspect: ASPECT_988_778,
-          candidates: ENVELOPE_CANDIDATES,
-        },
+        args: { ...ENVELOPE_FRAME, dimLevel: 3, phaseCount: M },
+        // **「比だから約分される」は行によって真偽が変わる**（実測して埋めた）。
+        // 分子（M）と分母（65536）で `needDistance` の max がどちらの辺で決まるかが
+        // 違う行では、比を取っても何も消えない ── M が小さいほど残る。
         inert: {
-          viewportAspect:
-            '収束「比」は `needDistance` の分子分母で同じアスペクトを通るので約分される ── '
-            + '**比だけを見ていると `viewportAspect` の取り違えが見えない**（1 列目は動く）',
           candidates: '上と同じ（標本 No.0 では K を増やしても動かない）',
+          ...(M >= 4096
+            ? {
+                viewportAspect:
+                  '分子と分母で `needDistance` の max が同じ辺（縦）で決まる行なので、'
+                  + 'アスペクトが約分で消える ── **比だけを見ていると取り違えが見えない**'
+                  + '（1 列目は M = 256 で動く）。M = 256 / 1024 の行では 3.82 / 0.44 動く',
+              }
+            : {}),
+          ...(M >= 16384
+            ? {
+                bandFrac: RATIO_RESIDUE('この表は 2 桁印字。M=16384 の行だけ 5.4e−3 に収まる'),
+                fovDeg: RATIO_RESIDUE('同 2.3e−4'),
+                fill: RATIO_RESIDUE('同 1.9e−4'),
+              }
+            : {}),
         },
         compute: envelopeConvergence,
       })),
@@ -538,23 +680,37 @@ const LEDGER: readonly LedgerEntry[] = [
   {
     file: 'src/core/framingEnvelope.ts',
     table: 4,
+    head: '`dimLevel` | `need` の収束比（M = 65536 基準）',
     what: '`M = 4096` の収束比が最悪になる `dimLevel`',
-    sensitivityCell: 0,
+    fn: ['needDistance', 'framingEnvelope'],
     skipCols: { 0: '`dimLevel` そのもの ── **この表の引数**である' },
     cells: [1.25, 1.75, 3, 4, 5].map((d, i) => ({
       // 3 行目（位置 2）は「3 〜 5」の 1 セルに 3 つの `dimLevel` が畳まれている。
       // **同じセルを 3 回、別々の引数で採点する**（畳まれていることを台帳の側で開く）
       row: i < 2 ? i : 2,
       col: 1,
-      args: {
-        dimLevel: d,
-        phaseCount: 4096,
-        viewportAspect: ASPECT_988_778,
-        candidates: ENVELOPE_CANDIDATES,
-      },
+      args: { ...ENVELOPE_FRAME, dimLevel: d, phaseCount: 4096 },
       inert: {
         viewportAspect: '収束「比」は `needDistance` の分子分母で約分される（上の表と同じ）',
         candidates: '標本 No.0 では K を 32 から増やしても包絡が 6 桁動かない',
+        // **`d = 1.75` の行だけ残差が印字桁の下に隠れる。**（実測: fov の残差は
+        // d=1.25 で 1.7e−2 / **d=1.75 で 6.9e−4** / d=3〜5 で 1.3e−2）──
+        // **同じ表の中でも、行によって「効く / 効かない」が変わる。**
+        // 私は初め `d = 1.25` だと書き、機械が d=1.75 だと訂正した
+        ...(d === 1.75
+          ? {
+              fovDeg: RATIO_RESIDUE('この表は 3 桁印字。d=1.75 では 6.9e−4 しか動かない'),
+              fill: RATIO_RESIDUE('同 5.6e−4'),
+            }
+          : {}),
+        // **doc が 3 行目を「3 〜 5」と 1 行に畳んでいる当のこと**
+        ...(d >= 4
+          ? {
+              dimLevel: 'doc がこの行を「3 〜 5」と畳んでいる当のこと ── '
+                + '標本 No.0 の上位 32 点は彩度 0 の黒枠なので `extent[3]`/`extent[4]` が'
+                + '開いても寄与せず、d = 3/4/5 の比は 1.5e−7 しか違わない（印字は 3 桁）',
+            }
+          : {}),
       },
       compute: envelopeConvergence,
     })),
@@ -575,58 +731,56 @@ type ExcludeKind =
   /** この台帳自身の解説 */
   | 'self';
 
-interface Excluded {
-  readonly file: string;
-  readonly table: number;
+interface Excluded extends TableRef {
   readonly kind: ExcludeKind;
   readonly why: string;
 }
 
 const EXCLUDED: readonly Excluded[] = [
-  { file: 'src/copy.ts', table: 1, kind: 'non-numeric', why: 'エラーコードが実入力から到達するかの ✅/❌。数が無い' },
-  { file: 'src/core/capture.ts', table: 1, kind: 'gpu-browser', why: '`gl.getError()` の実測。node に GL が無い' },
-  { file: 'src/core/compress.ts', table: 1, kind: 'gpu-browser', why: 'HDR バッファの読み戻し分位数（`readbackHDR`・988×778）' },
-  { file: 'src/core/compress.ts', table: 2, kind: 'gpu-browser', why: '位相を 120 秒流したときの生の峰。実 GPU の読み戻し' },
-  { file: 'src/core/fit.ts', table: 1, kind: 'historical', why: 'Phase 1b の「既存 222 件がこの変異を素通しした」の記録。いまの台帳は `scripts/teeth.mjs`' },
-  { file: 'src/core/fit.ts', table: 2, kind: 'iteration-cost', why: '投影後の実座標の最大。位相を流して取る量で、1 セルあたり数千フレーム' },
-  { file: 'src/core/fit.ts', table: 3, kind: 'iteration-cost', why: '傾斜帯の代償表。18,000F（300 秒）× 5 行 ── teeth 換算で数時間になる' },
-  { file: 'src/core/fit.ts', table: 4, kind: 'iteration-cost', why: '門が全開の領域の代償表。初めて動くまで 9,253F' },
-  { file: 'src/core/framingEnvelope.ts', table: 1, kind: 'iteration-cost', why: 'ブラウザで実時間 300 秒掃いたカメラ距離。実測ログ' },
-  { file: 'src/core/framingEnvelope.ts', table: 2, kind: 'iteration-cost', why: '`aX` の argmax を外した位相の比。512 位相 × 6 スロットを全点で取り直す' },
-  { file: 'src/core/framingEnvelope.ts', table: 5, kind: 'historical', why: '**引用された 3 標本が repo に無い**（型 3・§7.10）。`SPECIMEN_LEDGER` の同名標本は別物' },
-  { file: 'src/core/framingEnvelope.ts', table: 6, kind: 'iteration-cost', why: 'K を 8192 まで上げる表。1 スロット 1,634 ms × 21 スロット = 34 s' },
-  { file: 'src/core/framingEnvelope.ts', table: 7, kind: 'iteration-cost', why: '`d` を 0.005 刻みで 1001 点掃いた表（M = 65536 込み）' },
-  { file: 'src/core/framingEnvelope.ts', table: 8, kind: 'iteration-cost', why: '同上。1001 点 × 6 標本' },
-  { file: 'src/image/blendModel.ts', table: 1, kind: 'non-numeric', why: 'モデルの仮定を並べた表。数が無い' },
-  { file: 'src/image/columnLine.ts', table: 1, kind: 'gpu-browser', why: '位相を除いた残差。GPU の加算合成の読み戻し' },
-  { file: 'src/image/spriteGain.ts', table: 1, kind: 'historical', why: '`gainFor` の**クランプを入れる前**の式の値。現在の export では `MIN_CALIBRATED_S0` で潰れる（写経すると `x/x`）' },
-  { file: 'src/image/spriteGain.ts', table: 2, kind: 'historical', why: '`gain · Σw` の実測。Phase 1b の線経路（畳み前）の構成で、現在の `linePoints` では作れない' },
-  { file: 'src/image/spriteGain.ts', table: 3, kind: 'historical', why: '列平均線 `d = 0` の 0.0058472 は**畳み（Phase 2a）より前**の値。現構成では 2.21（下の `it` が数値で記録する）' },
-  { file: 'src/image/spriteGain.ts', table: 5, kind: 'gpu-browser', why: 'モデルと GPU 実測の重なりの比較。実測列が実 GPU の読み戻し' },
-  { file: 'src/image/spriteGain.ts', table: 6, kind: 'gpu-browser', why: '位相のみの予測と実測の比較。実測列が実 GPU の読み戻し' },
-  { file: 'src/ingest/capabilities.ts', table: 1, kind: 'gpu-browser', why: 'Chromium / Safari の canvas 色管理の実測' },
-  { file: 'src/ingest/decode.ts', table: 1, kind: 'gpu-browser', why: 'ブラウザの `createImageBitmap` の median 時間' },
-  { file: 'src/ingest/format.ts', table: 1, kind: 'gpu-browser', why: 'HEIC の `createImageBitmap` の可否（ブラウザ差）' },
-  { file: 'src/ingest/ingest.ts', table: 1, kind: 'gpu-browser', why: 'メインスレッドの遮断時間の実測' },
-  { file: 'src/ingest/orientProbe.ts', table: 1, kind: 'gpu-browser', why: 'EXIF 向きのデコーダ実測（4 経路）' },
-  { file: 'src/ingest/session.ts', table: 1, kind: 'gpu-browser', why: '取り込みの区間ごとの median 時間' },
-  { file: 'src/render/blendProbe.ts', table: 1, kind: 'non-numeric', why: '器具と composer の構成の対照表。数が 3 つしか無く、どれも設定値' },
-  { file: 'src/scene/lensScene.ts', table: 1, kind: 'iteration-cost', why: 'resize 後 300 秒のカメラ距離。18,000F' },
-  { file: 'src/tests/collapsePhase.test.ts', table: 1, kind: 'gpu-browser', why: 'G9 の 2 因子の内訳。実測側が実 GPU' },
-  { file: 'src/tests/compress.test.ts', table: 1, kind: 'iteration-cost', why: '刻みを 64 倍まで細かくした隣接差の掃引' },
-  { file: 'src/tests/docLedger.test.ts', table: 1, kind: 'self', why: 'この台帳自身の解説（型 5 の 4 例）。**自分で自分を採点しない**' },
-  { file: 'src/tests/docLedger.test.ts', table: 2, kind: 'self', why: 'この台帳自身の費用表。`npm test` の実測で、機体で変わる' },
-  { file: 'src/tests/framing.test.ts', table: 1, kind: 'historical', why: '`core/fit.ts` の表 1 と同じ Phase 1b の記録' },
-  { file: 'src/tests/robustness.test.ts', table: 1, kind: 'historical', why: 'Phase 1b の 276 件がこの変異を素通しした記録。いまは `scripts/teeth.mjs`' },
-  { file: 'src/tests/robustness.test.ts', table: 2, kind: 'iteration-cost', why: 'P3 → sRGB の色相差。この表の掃引は `color.test.ts` が別に持っている' },
-  { file: 'src/tests/specimen.test.ts', table: 1, kind: 'iteration-cost', why: '3 ティア × 6 標本の加算深度。格子を 3 通り作り直す' },
-  { file: 'src/tests/survival.test.ts', table: 1, kind: 'non-numeric', why: 'どのフェーズで何が配線されていなかったかの年表。数が無い' },
-  { file: 'src/tests/widen.test.ts', table: 1, kind: 'iteration-cost', why: '`npm test` 自身の費用（10.7 倍 / 1.8 倍）。機体で変わる' },
-  { file: 'src/tests/widen.test.ts', table: 2, kind: 'iteration-cost', why: '包絡を 21 スロット × 100 位相へ広げた実測' },
-  { file: 'src/tests/widen.test.ts', table: 3, kind: 'iteration-cost', why: '`layout()` 掃引 1001 点' },
-  { file: 'src/tests/widen.test.ts', table: 4, kind: 'iteration-cost', why: '傾斜帯 36,000F' },
-  { file: 'src/tests/widen.test.ts', table: 5, kind: 'iteration-cost', why: '国勢調査の内訳（掃引の分類）。数え方は同ファイルの `EXPECTED_SWEEPS` が持つ' },
-  { file: 'src/tests/widen.test.ts', table: 6, kind: 'iteration-cost', why: '国勢調査の内訳（点集合の規模）。数え方は同ファイルの `EXPECTED_POINT_SETS` が持つ' },
+  { file: 'src/copy.ts', table: 1, head: 'code | 実入力から到達するか', kind: 'non-numeric', why: 'エラーコードが実入力から到達するかの ✅/❌。数が無い' },
+  { file: 'src/core/capture.ts', table: 1, head: 'バッファ | 例外 | `gl.getError()` | 読めた値', kind: 'gpu-browser', why: '`gl.getError()` の実測。node に GL が無い' },
+  { file: 'src/core/compress.ts', table: 1, head: 'dimLevel | p50 | p99 | p99.9 | 最大 | > 1.0 の画素', kind: 'gpu-browser', why: 'HDR バッファの読み戻し分位数（`readbackHDR`・988×778）' },
+  { file: 'src/core/compress.ts', table: 2, head: 'dimLevel | 記録値 | 位相を 120 秒流したときの生の峰 | 比', kind: 'gpu-browser', why: '位相を 120 秒流したときの生の峰。実 GPU の読み戻し' },
+  { file: 'src/core/fit.ts', table: 1, head: '壊し方 | 既存 222 件', kind: 'historical', why: 'Phase 1b の「既存 222 件がこの変異を素通しした」の記録。いまの台帳は `scripts/teeth.mjs`' },
+  { file: 'src/core/fit.ts', table: 2, head: ' | 実測 | `imageHalfExtents` 比', kind: 'iteration-cost', why: '投影後の実座標の最大。位相を流して取る量で、1 セルあたり数千フレーム' },
+  { file: 'src/core/fit.ts', table: 3, head: 'd | 門 | 1F 目 | 初めて動く | 300 秒後 | 倍率', kind: 'iteration-cost', why: '傾斜帯の代償表。18,000F（300 秒）× 5 行 ── teeth 換算で数時間になる' },
+  { file: 'src/core/fit.ts', table: 4, head: 'd | 門 | 1F 目 | 300 秒後 | 倍率 | 初めて動く', kind: 'iteration-cost', why: '門が全開の領域の代償表。初めて動くまで 9,253F' },
+  { file: 'src/core/framingEnvelope.ts', table: 1, head: '経過（gate 時間） | カメラ距離', kind: 'iteration-cost', why: 'ブラウザで実時間 300 秒掃いたカメラ距離。実測ログ' },
+  { file: 'src/core/framingEnvelope.ts', table: 2, head: 'd | `aX` の argmax を外した位相 | 外したときの最悪比', kind: 'iteration-cost', why: '`aX` の argmax を外した位相の比。512 位相 × 6 スロットを全点で取り直す' },
+  { file: 'src/core/framingEnvelope.ts', table: 5, head: '標本 | d | `need` の比', kind: 'historical', why: '**引用された 3 標本が repo に無い**（型 3・§7.10）。`SPECIMEN_LEDGER` の同名標本は別物' },
+  { file: 'src/core/framingEnvelope.ts', table: 6, head: 'K | 横長 `d=5` の `need` 比 | 1 スロット | 21 スロット', kind: 'iteration-cost', why: 'K を 8192 まで上げる表。1 スロット 1,634 ms × 21 スロット = 34 s' },
+  { file: 'src/core/framingEnvelope.ts', table: 7, head: '標本 | d | 成分 | M=4096 | M=65536 | 本物か', kind: 'iteration-cost', why: '`d` を 0.005 刻みで 1001 点掃いた表（M = 65536 込み）' },
+  { file: 'src/core/framingEnvelope.ts', table: 8, head: '標本 | 下回った点 | 最悪 | 不足', kind: 'iteration-cost', why: '`envelopeFor` が厳密値を下回る点。0.005 刻み 1001 点 × 6 標本で、1 セルあたり 28〜32 秒' },
+  { file: 'src/image/blendModel.ts', table: 1, head: 'モデル | 仮定 | `blendF32` / `blendF16` / `blendF16FlushSource`', kind: 'non-numeric', why: '3 つのモデルの仮定を並べた対照表。数が 1 つも無く、列は文である' },
+  { file: 'src/image/columnLine.ts', table: 1, head: '入力（同一幾何・深度 378） | 位相を除いた残差', kind: 'gpu-browser', why: '位相を除いた残差。実 GPU の加算合成の読み戻しで、node では作れない' },
+  { file: 'src/image/spriteGain.ts', table: 1, head: 's0 | S = k·s0 | gainFor | 誤差', kind: 'historical', why: '`gainFor` の**クランプを入れる前**の式の値。現在の export では `MIN_CALIBRATED_S0` で潰れる（写経すると `x/x`）' },
+  { file: 'src/image/spriteGain.ts', table: 2, head: '構成 | `gain · Σw`（1.0 なら較正どおり）', kind: 'historical', why: '`gain · Σw` の実測。Phase 1b の線経路（畳み前）の構成で、現在の `linePoints` では作れない' },
+  { file: 'src/image/spriteGain.ts', table: 3, head: '構成 | `sampleWeight` | 意味', kind: 'historical', why: '列平均線 `d = 0` の 0.0058472 は**畳み（Phase 2a）より前**の値。現構成では 2.21（下の `it` が数値で記録する）' },
+  { file: 'src/image/spriteGain.ts', table: 5, head: 'dimLevel | モデル | 実測 平均 | 実測 **最大** | モデル/実測最大', kind: 'gpu-browser', why: 'モデルと GPU 実測の重なりの比較。実測列が実 GPU の読み戻し' },
+  { file: 'src/image/spriteGain.ts', table: 6, head: 'dimLevel | 位相のみの予測 | 実測', kind: 'gpu-browser', why: '位相のみの予測と実測の比較。実測列が実 GPU の読み戻し' },
+  { file: 'src/ingest/capabilities.ts', table: 1, head: '構成 | Chromium 148 | Safari 18.6', kind: 'gpu-browser', why: 'Chromium / Safari の canvas 色管理の実測' },
+  { file: 'src/ingest/decode.ts', table: 1, head: ' | median', kind: 'gpu-browser', why: 'ブラウザの `createImageBitmap` の median 時間' },
+  { file: 'src/ingest/format.ts', table: 1, head: ' | `createImageBitmap`', kind: 'gpu-browser', why: 'HEIC の `createImageBitmap` の可否（ブラウザ差）' },
+  { file: 'src/ingest/ingest.ts', table: 1, head: '区間 | wall | メインスレッドの最長遮断', kind: 'gpu-browser', why: 'ブラウザでのメインスレッド遮断時間の実測（wall と最長遮断）。node に相当物が無い' },
+  { file: 'src/ingest/orientProbe.ts', table: 1, head: '経路 | 結果', kind: 'gpu-browser', why: 'EXIF の向きをデコーダが適用するかの実測（4 経路 × 実ブラウザ）。node では作れない' },
+  { file: 'src/ingest/session.ts', table: 1, head: ' | median', kind: 'gpu-browser', why: '取り込みの区間ごとの median 時間。ブラウザの実測で、機体とブラウザで変わる' },
+  { file: 'src/render/blendProbe.ts', table: 1, head: ' | composer のバッファ | この器具', kind: 'non-numeric', why: '器具と composer の構成の対照表。数が 3 つしか無く、どれも設定値' },
+  { file: 'src/scene/lensScene.ts', table: 1, head: ' | カメラ距離', kind: 'iteration-cost', why: 'resize 後 300 秒のカメラ距離。18,000F' },
+  { file: 'src/tests/collapsePhase.test.ts', table: 1, head: '因子 | 大きさ | 正体', kind: 'gpu-browser', why: 'G9 の −17.58% を 2 因子へ割った内訳。実測側が実 GPU の読み戻しである' },
+  { file: 'src/tests/compress.test.ts', table: 1, head: '刻み h | 最大隣接差 | 予算 0.12 比 | `差 / h`', kind: 'iteration-cost', why: '刻みを 64 倍まで細かくした隣接差の掃引。閉形式の上界は同ファイルが別に持つ' },
+  { file: 'src/tests/docLedger.test.ts', table: 1, head: '表 | 書かれていた前提 | 本当の引数 | 印字値で計算すると', kind: 'self', why: 'この台帳自身の解説（型 5 の 4 例）。**自分で自分を採点しない**' },
+  { file: 'src/tests/docLedger.test.ts', table: 2, head: '対象 | `npm test` の増分 | `npm run teeth` 換算（×54）', kind: 'self', why: 'この台帳自身の費用表。`npm test` の実測で、機体で変わる' },
+  { file: 'src/tests/framing.test.ts', table: 1, head: '壊し方 | 既存 222 件', kind: 'historical', why: '`core/fit.ts` の表 1 と同じ Phase 1b の記録' },
+  { file: 'src/tests/robustness.test.ts', table: 1, head: '穴 | 変異 | 1b の 276 件', kind: 'historical', why: 'Phase 1b の 276 件がこの変異を素通しした記録。いまは `scripts/teeth.mjs`' },
+  { file: 'src/tests/robustness.test.ts', table: 2, head: '符号値 | Δ色相 | Δ彩度', kind: 'iteration-cost', why: 'P3 → sRGB の色相差。この表の掃引は `color.test.ts` が別に持っている' },
+  { file: 'src/tests/specimen.test.ts', table: 1, head: '標本 | 寸法 | BALANCED | HIGH | ULTRA', kind: 'iteration-cost', why: '3 ティア × 6 標本の加算深度。格子を 3 通り作り直す' },
+  { file: 'src/tests/survival.test.ts', table: 1, head: 'フェーズ | 何が起きたか', kind: 'non-numeric', why: 'どのフェーズで何が配線されていなかったかの年表。数が無い' },
+  { file: 'src/tests/widen.test.ts', table: 1, head: '演算子 | `npm test` の費用（このホスト・2 回計測） | 新しく赤になった主張', kind: 'iteration-cost', why: '`npm test` 自身の費用（10.7 倍 / 1.8 倍）。機体で変わる' },
+  { file: 'src/tests/widen.test.ts', table: 2, head: '変異 | 2c-vii の機構', kind: 'iteration-cost', why: '包絡を 21 スロット × 100 位相へ広げた実測' },
+  { file: 'src/tests/widen.test.ts', table: 3, head: '格子 | 費用 | 最悪 | 育った点', kind: 'iteration-cost', why: '`layout()` を挟んだときに動く `d` の掃引 1001 点。1 点あたり数百フレーム回す' },
+  { file: 'src/tests/widen.test.ts', table: 4, head: '掃引 | 最悪の超過率', kind: 'iteration-cost', why: '傾斜帯の代償を飽和まで回した 36,000 フレームの実測。1 点で 400 秒かかる' },
+  { file: 'src/tests/widen.test.ts', table: 5, head: '`d` の刻み | 点数 | 動いた点 | 最悪', kind: 'iteration-cost', why: '国勢調査の内訳（掃引の分類）。数え方は同ファイルの `EXPECTED_SWEEPS` が持つ' },
+  { file: 'src/tests/widen.test.ts', table: 6, head: '`d` | 門 | 600F | 900F | 18000F | 36000F | 初動', kind: 'iteration-cost', why: '国勢調査の内訳（点集合の規模）。数え方は同ファイルの `EXPECTED_POINT_SETS` が持つ' },
 ];
 
 /**
@@ -637,18 +791,26 @@ const EXCLUDED: readonly Excluded[] = [
 const EXPECTED_EXCLUDED = 44;
 
 /** **台帳のラチェット。** 減らすならこの数も同じ PR で下げること */
-const EXPECTED_LEDGER_CELLS = 92;
+const EXPECTED_LEDGER_CELLS = 87;
+
+/**
+ * 採点したセルの **doc 側の表記桁の総和**。桁を落とすと許容が緩むので、ここもラチェットにする。
+ * 実測で埋めること（下の `it` が印字する）。
+ */
+const EXPECTED_DIGIT_SUM = 419;
 
 // --------------------------------------------------------------------- 検査
 
 const key = (t: { file: string; table: number }) => `${t.file}#${t.table}`;
 const CORPUS_BY_KEY = new Map(CORPUS.map((t) => [key({ file: t.file, table: t.index }), t]));
 
-function tableOf(e: { file: string; table: number }): DocTable {
+function tableOf(e: TableRef): DocTable {
   const t = CORPUS_BY_KEY.get(key(e));
   if (!t) throw new Error(`${key(e)} という表は実装に無い（台帳が doc からずれている）`);
   return t;
 }
+
+const headOf = (t: DocTable) => t.header.join(' | ');
 
 function cellNumber(t: DocTable, c: LedgerCell): DocNumber {
   const row = t.rows[c.row];
@@ -670,6 +832,13 @@ describe('doc の数を関数で再現する台帳（型 5）', () => {
     // eslint-disable-next-line no-console
     console.log(`表: 実装 ${impl.length} / テスト ${tests.length} / 合計 ${CORPUS.length}`);
     expect(CORPUS.length).toBeGreaterThanOrEqual(49);
+    // **2 つの独立な定義が同じ本数を出すこと。** 片方にしか見えない表を書けば
+    // 被覆検査を素通りできる ── 区切り行を 1 文字変えるだけで足りる
+    expect(
+      LOOSE_COUNT,
+      `厳しい定義 ${CORPUS.length} 表・緩い定義 ${LOOSE_COUNT} 表。`
+        + '走査器の片方にしか見えない表が在る（被覆検査を素通りする）',
+    ).toBe(CORPUS.length);
   });
 
   it('台帳 ∪ 除外表 ⊇ 全表（表を足したら必ずどちらかを選ばせる）', () => {
@@ -700,12 +869,58 @@ describe('doc の数を関数で再現する台帳（型 5）', () => {
         + '増やすなら EXPECTED_EXCLUDED も同じ PR で上げること',
     ).toBeLessThanOrEqual(EXPECTED_EXCLUDED);
     for (const e of EXCLUDED) {
-      expect(e.why.length, `${key(e)} の理由が短すぎる`).toBeGreaterThanOrEqual(10);
+      expect(e.why.length, `${key(e)} の理由が短すぎる`).toBeGreaterThanOrEqual(24);
     }
+    // **同じ理由の貼り付けを止める。** 「TODO」を 44 行並べれば被覆検査は通る
+    const reasons = EXCLUDED.map((e) => e.why);
+    expect(new Set(reasons).size, '除外の理由が重複している').toBe(reasons.length);
   });
 
-  it('台帳が自分自身の表を採点していない（自己参照の禁止）', () => {
-    expect(LEDGER.filter((e) => e.file === 'src/tests/docLedger.test.ts').map(key)).toEqual([]);
+  /**
+   * **表記桁のラチェット**（独立監査の X4）。doc の桁を落とせば許容が緩む ──
+   * `0.218262` を `0.2` に書き換えると、RN の表が RTZ の関数でも通る。
+   * 桁の総和を持てば、**緩めたことが数として差分に出る**。
+   */
+  it('doc の表記桁が落ちていない', () => {
+    let sum = 0;
+    for (const e of LEDGER) {
+      const t = tableOf(e);
+      for (const c of e.cells) sum += Math.max(0, cellNumber(t, c).decimals);
+    }
+    // eslint-disable-next-line no-console
+    console.log(`採点したセルの表記桁の総和: ${sum}`);
+    expect(
+      sum,
+      `表記桁の総和が ${sum}（${EXPECTED_DIGIT_SUM} あったはず）。`
+        + 'doc の桁を落とすと許容が緩む。落とすなら同じ PR でこの数も下げること',
+    ).toBeGreaterThanOrEqual(EXPECTED_DIGIT_SUM);
+  });
+
+  it('指し先のヘッダが一致する（表を 1 つ挿すと添字が黙ってずれる）', () => {
+    const wrong = [...LEDGER, ...EXCLUDED]
+      .filter((e) => CORPUS_BY_KEY.has(key(e)))
+      .filter((e) => headOf(tableOf(e)) !== e.head)
+      .map((e) => `${key(e)}\n    台帳: ${e.head}\n    実装: ${headOf(tableOf(e))}`);
+    expect(wrong, '台帳・除外表の指し先がずれている').toEqual([]);
+  });
+
+  it('台帳がテストファイルの表を採点していない（自己参照の禁止）', () => {
+    // **`docLedger.test.ts` だけを禁じても足りない**（独立監査の X7）──
+    // 別のテストファイルに自分で表を書けば、自分で書いた数を自分で緑にできる
+    expect(LEDGER.filter((e) => e.file.startsWith('src/tests/')).map(key)).toEqual([]);
+  });
+
+  it('doc の側が関数名を名乗っている（どのモデルの表かを台帳の側だけに持たない）', () => {
+    const silent: string[] = [];
+    for (const e of LEDGER) {
+      const t = tableOf(e);
+      const hay = `${e.head}\n${t.preamble}`;
+      for (const name of e.fn) {
+        if (!hay.includes(name)) silent.push(`${key(e)} が ${name} を doc で名乗っていない`);
+      }
+      expect(e.fn.length, `${key(e)} が関数名を 1 つも宣言していない`).toBeGreaterThan(0);
+    }
+    expect(silent, 'doc が関数名を名乗っていない表がある').toEqual([]);
   });
 
   it('台帳のセル数がラチェットを下回っていない', () => {
@@ -770,9 +985,11 @@ describe('doc の数を関数で再現する台帳（型 5）', () => {
     const decorative: string[] = [];
     const wronglyInert: string[] = [];
     let inertCells = 0;
+    let cells = 0;
     for (const e of LEDGER) {
       const t = tableOf(e);
-      const c = e.cells[e.sensitivityCell ?? 0];
+      for (const c of e.cells) {
+      cells++;
       const doc = cellNumber(t, c);
       const tol = 10 ** -Math.max(0, doc.decimals);
       const base = c.compute(c.args);
@@ -811,9 +1028,10 @@ describe('doc の数を関数で再現する台帳（型 5）', () => {
         }
       }
       if (moved === 0) inertCells++;
+      }
     }
     // eslint-disable-next-line no-console
-    console.log(`感度検査: 全引数が inert のセル ${inertCells} / ${LEDGER.length}`);
+    console.log(`感度検査: ${cells} セル全部を揺らした（全引数が inert のセル ${inertCells}）`);
     expect(decorative, '飾りで宣言された引数がある').toEqual([]);
     expect(wronglyInert, 'inert と書いた引数が実際には効いている').toEqual([]);
   });
