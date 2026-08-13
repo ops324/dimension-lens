@@ -53,8 +53,9 @@ import {
   type EnvelopeCache,
 } from '../core/framingEnvelope';
 import type { PlaneRotation } from '../math/rotation';
-import { imageHalfExtents, type GridSpec } from '../image/grid';
+import { effectiveRowCount, imageHalfExtents, type GridSpec } from '../image/grid';
 import { buildColumnLine, effectiveLineCount, lineCountFor } from '../image/columnLine';
+import { linearToOklab, primariesFor } from '../color/oklab';
 import { collapseWeight, modelledAdditionDepth } from '../image/spriteGain';
 import { axisPresence, type BlockScales } from '../image/stats';
 import {
@@ -149,6 +150,12 @@ export interface LensSceneStats {
    * **格子を描くフレームでは 0**（Phase 2c-vi。それまでは線バッファの最後の状態が漏れていた）。
    */
   linePoints: number;
+  /**
+   * そのフレームで実際に描いている格子の**行数**（Phase 2c-x の `effectiveRowCount`）。
+   * `gridH` は上限、こちらが実数 ── `lineCount` と `linePoints` の関係と同じ。
+   * **線を描くフレームでは 0**（`linePoints` が格子フレームで 0 なのと対）。
+   */
+  gridRowsDrawn: number;
   /** セル 1 個あたりの device px */
   s0: number;
   /** `gl_PointSize`（device px） */
@@ -225,6 +232,11 @@ export class LensScene {
    * `line.colors` へ直接書かれるので、控えを取らないと `'image'` へ戻せない。
    */
   private lineColors0 = new Float32Array(0);
+  /**
+   * 畳んだ格子の**素の色**（色場を差し替える前）。`lineColors0` の格子版（Phase 2c-x）。
+   * 畳んでいないフレームでは `source.colors` をそのまま使うので、ここは空のままでよい。
+   */
+  private gridColors0 = new Float32Array(0);
   private readonly phases: RotationPhases = createPhases();
   private readonly angles: PlaneRotation[] = createAngleBuffer();
   private readonly matrix = new Float64Array(N * N);
@@ -250,6 +262,16 @@ export class LensScene {
    * `-1` は「まだ一度も組んでいない」── 0 や 1 は正当な値なので番兵に使えない。
    */
   private linePoints = -1;
+  /** 直近に**要求した**線の点数。`linePoints`（切り詰め後の実数）とは別（Phase 2c-x） */
+  private lineRequested = -1;
+  /**
+   * いま格子バッファに入っている**行数**（`effectiveRowCount`）。`grid.rows` とは別物。
+   * `-1` は「まだ一度も組んでいない」── 1 も `rows` も正当な値なので番兵に使えない
+   * （`linePoints` と同じ理由）。
+   */
+  private gridRows = -1;
+  /** 畳んだ格子の base。宣言順の理由は `lineBase` と同じ */
+  private gridBase = new Float32Array(N);
   private gridConfig = { s0: 0, s0y: 0, spritePx: 0, gain: 1, calibrated: true };
   private lineConfig = { s0: 0, s0y: 0, spritePx: 0, gain: 1, calibrated: true };
   private probe: TextureProbe | null = null;
@@ -324,7 +346,19 @@ export class LensScene {
     // 列平均バッファは**正準バッファの列平均**から作る（格子からではない。SPEC §4.7）
     this.lineCount = lineCountFor(source.grid.cols);
     const lineBase = new Float32Array(this.lineCount * N);
-    buildColumnLine(
+    /**
+     * **返り値の `count` を使う**（Phase 2c-x で直した）。`buildColumnLine` は
+     * `n = min(count, width)` で切るので、`width < cols` の画像では**書かれた点数が
+     * `lineCount` より少ない**。2c-ix まではここも `rebuildLine` も返り値を捨てて
+     * `lineCount` を代入しており、独立監査が**台帳 6 標本 × 3 ティア = 18 セル中 6 セル**
+     * （`gray` / `mono` の 64×40、3 ティアとも）で過大申告を実測した。
+     *
+     * 出荷時の色場 `'image'` では末尾の色が 0 なので絵は変わらないが、
+     * `setColorField('mean')` を撃つと**末尾 314 点すべてに平均色が入って原点に重なる**
+     * ── 測定器の口（G12 が使う色場）が汚れる。`collapseWeight` にも過大な `nx` が渡る。
+     * **2c-vi が格子フレームについて直したのと同じ型の嘘が、線側に残っていた。**
+     */
+    const built = buildColumnLine(
       source.columnMeans,
       source.width,
       source.height,
@@ -334,7 +368,10 @@ export class LensScene {
       { base: lineBase, colors: this.line.colors },
     );
     this.lineBase = lineBase;
-    this.linePoints = this.lineCount;
+    this.linePoints = built.count;
+    this.lineRequested = this.lineCount;
+    // 画像が変わると格子の寸法も変わる。畳みは組み直す（`-1` は「まだ組んでいない」）
+    this.gridRows = -1;
     this.captureLineColors();
     // 色場を（既定なら素のまま）両バッチへ焼き付ける。commitColors はこの中で撃つ
     this.applyColorField();
@@ -351,10 +388,108 @@ export class LensScene {
    * 呼ぶのは `n` が変わったときだけ。`extentX` は `dimLevel` からしか動かないので、
    * 定常状態では 1 フレームに 0 回である。
    */
+  /**
+   * 格子を `ny` 行へ畳む（Phase 2c-x）。`rebuildLine` の y 軸版。
+   *
+   * ## 源は「既に畳まれた格子」である —— 正準バッファは main に無い
+   *
+   * `rebuildLine` は `columnMeans`（正準幅・リニア光）から作り直せる（§4.7）。
+   * **y にはそれに当たる前計算が無い。** 正準は worker のインスタンス変数
+   * （`ingest/session.ts` の `canonical`）で、`IngestedResponse` はそれを載せていない。
+   * 独立監査が転送を実演した ── **転送すると worker 側が detach され、以後の `relift` が
+   * 例外を出さずに NaN の base ともっともらしい `safeDist` を返す**。複製すれば
+   * 正準 1 枚ぶん（1024×640 で 7.5 MB / 2048×2048 で 48 MB）が両スレッドに常駐する。
+   *
+   * → **格子セルの帯平均で作る。** §4.7 の「縮約は正準バッファから」を y については
+   * 満たしていない。**これは隠さずに書く**（`docLedger` と SPEC §4.6.1 に記録した）。
+   * 誤差の実測は「正準から `rows'` 行で格子を作り直した版」との比較で ΔE00 ≤ 5.4e−6
+   * （`rows'` が `rows` の約数のとき）── 帯境界が `floor` の前から一致するためである。
+   *
+   * ## リニア光で平均する。**正規化 Oklab を平均してはいけない**
+   *
+   * `base` の `L', a', b'` を直接平均すると、Oklab がほぼ立方根空間なので
+   * 明暗の混じった帯で `L` が上へ引っぱられる。実測（標本 No.0 / `rows' = 1`）:
+   * 正規化 Oklab 平均は ΔE00 **8.2152**（378 点中 106 点が予算 3.0 超）・相対輝度誤差
+   * **30.59%**、リニア光平均は ΔE00 **0.0333**（0 点）・**0.1331%** ── **5〜6 桁**違う。
+   * `base` の位置ずれも 0.146340（`aY = 0.625` の **23.4%**）で、色だけの問題ではない。
+   *
+   * → `lift` / `buildColumnLine` と**同じ順序**で書く: リニア光で平均し、
+   * 帯ごとに Oklab へ 1 回だけ変換する。
+   */
+  private rebuildGrid(ny: number): void {
+    if (ny === this.gridRows) return;
+    this.gridRows = ny;
+    const { cols, rows } = this.source.grid;
+    /**
+     * **畳まないときは源をそのまま使う。** ここを通して `ny = rows` で「畳み直す」と、
+     * `colors` の f32 を読み戻して Oklab へ変換し直すことになり、`lift` が f64 の
+     * リニア光から変換した `base` とは下位ビットが一致しない ──
+     * つまり「畳まない帯は従来とビット単位で同一」という 2c-x の約束が破れる。
+     */
+    if (ny === rows) {
+      this.applyColorField();
+      return;
+    }
+    const need = cols * ny;
+    if (this.gridBase.length < need * N) this.gridBase = new Float32Array(need * N);
+    if (this.gridColors0.length < need * 3) this.gridColors0 = new Float32Array(need * 3);
+
+    const { aY } = imageHalfExtents(this.source.width, this.source.height);
+    const p = primariesFor(this.source.gamut);
+    const { lMid, sL, sC } = this.source.scales;
+    const src = this.source.base;
+    const sc = this.source.colors;
+    const lab = new Float64Array(3);
+
+    for (let j = 0; j < ny; j++) {
+      // 帯境界は `lift` と同じ `floor` の厳密分割（どの源の行もちょうど 1 帯に属する）
+      const y0 = ((j * rows) / ny) | 0;
+      const y1 = Math.max((((j + 1) * rows) / ny) | 0, y0 + 1);
+      const inv = 1 / (y1 - y0);
+      // `v` も `lift` の規約で引き直す（`rows` を `ny` に置き換えるだけ）
+      const v = -(((2 * (j + 0.5)) / ny - 1) * aY);
+      for (let i = 0; i < cols; i++) {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        for (let y = y0; y < y1; y++) {
+          const o3 = (Math.min(rows - 1, y) * cols + i) * 3;
+          r += sc[o3];
+          g += sc[o3 + 1];
+          b += sc[o3 + 2];
+        }
+        r *= inv;
+        g *= inv;
+        b *= inv;
+        linearToOklab(p, r, g, b, lab);
+
+        const d5 = (j * cols + i) * N;
+        // `u` は列で決まるので源の 1 行目からそのまま写す（列は畳んでいない）
+        this.gridBase[d5] = src[i * N];
+        this.gridBase[d5 + 1] = v;
+        this.gridBase[d5 + 2] = (lab[0] - lMid) / sL;
+        this.gridBase[d5 + 3] = lab[1] / sC;
+        this.gridBase[d5 + 4] = lab[2] / sC;
+
+        const d3 = (j * cols + i) * 3;
+        this.gridColors0[d3] = r;
+        this.gridColors0[d3 + 1] = g;
+        this.gridColors0[d3 + 2] = b;
+      }
+    }
+    this.applyColorField();
+  }
+
   private rebuildLine(n: number): void {
-    if (n === this.linePoints) return;
-    this.linePoints = n;
-    buildColumnLine(
+    /**
+     * **早期 return は「要求した n」で見る**（Phase 2c-x）。`linePoints` は
+     * `buildColumnLine` が切り詰めた**実数**なので、`width < cols` の画像では
+     * `n !== linePoints` が定常的に真になり、**毎フレーム組み直す**ことになる。
+     */
+    if (n === this.lineRequested) return;
+    this.lineRequested = n;
+    // `applySource` と同じ理由で**返り値の `count`** を持つ（Phase 2c-x）
+    const built = buildColumnLine(
       this.source.columnMeans,
       this.source.width,
       this.source.height,
@@ -363,6 +498,7 @@ export class LensScene {
       n,
       { base: this.lineBase, colors: this.line.colors },
     );
+    this.linePoints = built.count;
     this.captureLineColors();
     this.applyColorField();
   }
@@ -396,10 +532,12 @@ export class LensScene {
         dst[i + 2] = base * src[i + 2] + mb;
       }
     };
+    // 畳んでいるフレームは畳んだ色を、そうでなければ源をそのまま（Phase 2c-x）
+    const folded = this.gridRows > 0 && this.gridRows !== this.source.grid.rows;
     write(
       this.points.colors,
-      this.source.colors,
-      this.source.grid.cols * this.source.grid.rows,
+      folded ? this.gridColors0 : this.source.colors,
+      this.source.grid.cols * (folded ? this.gridRows : this.source.grid.rows),
     );
     this.points.commitColors();
     write(this.line.colors, this.lineColors0, this.line.colors.length / 3);
@@ -558,8 +696,11 @@ export class LensScene {
     // 潰れた軸は **CPU 側で先に畳む**（Phase 2）。`extentX = 1` では `lineCount` に
     // 厳密に戻るので `dimLevel = 1` の絵は 1 ビットも動かない（`effectiveLineCount`）。
     if (!grid) this.rebuildLine(effectiveLineCount(this.extent[0], this.lineCount));
-    const base = grid ? this.source.base : this.lineBase;
-    const count = grid ? this.source.grid.cols * this.source.grid.rows : this.linePoints;
+    // 格子は y を畳む（Phase 2c-x）。`extentY = 1` では `rows` に厳密に戻る
+    else this.rebuildGrid(effectiveRowCount(this.extent[1], this.source.grid.rows));
+    const foldedGrid = grid && this.gridRows !== this.source.grid.rows;
+    const base = grid ? (foldedGrid ? this.gridBase : this.source.base) : this.lineBase;
+    const count = grid ? this.source.grid.cols * this.gridRows : this.linePoints;
 
     liftProject5(base, count, this.matrix, this.cascadeDist, batch.positions);
     batch.commit(count);
@@ -594,13 +735,30 @@ export class LensScene {
     const spacingX = grid
       ? this.extent[0]
       : (this.extent[0] * this.lineCount) / Math.max(1, this.linePoints);
+    /**
+     * **y 側にも同じ補正が要る**（Phase 2c-x）。`spacingX` と同じ理由で**分子だけを直す**。
+     *
+     * 入れ忘れると `collapseWeight` は「`rows` 行ぶんの被覆」を分母に置いたまま
+     * `rows'` 行しか描かない絵を採点するので、雲が `1/(d−1)` 倍暗く出る。
+     * 独立監査が実演した ── `d ∈ (1,2]` の 1039 点中 **618 点で −50% 超**、
+     * 最悪 **−90.12%**（`d = 1.0826`）。しかも `extentY = 1` では
+     * `1 · rows / rows` が厳密 1 なので**アンカーの `x/x` は保たれ**、
+     * `npm test` 447 件・歯 57 本・`ladder --structural` が**全部緑のまま通る**。
+     *
+     * 順序も効く: `(extentY · rows) / rows'` と**整数どうしで割る**こと。
+     * `extentY · s0y · rows / rows'` の順に書くと `s0y × rows ÷ rows'` が丸めで戻らず、
+     * `extentY = 1` の厳密 1 が消える。
+     */
+    const spacingY = grid
+      ? (this.extent[1] * this.source.grid.rows) / Math.max(1, this.gridRows)
+      : 0;
     const collapse = {
       s0x: cfg.s0,
       s0y: cfg.s0y,
       extentX: spacingX,
-      extentY: grid ? this.extent[1] : 0,
+      extentY: spacingY,
       nx: grid ? this.source.grid.cols : this.linePoints,
-      ny: grid ? this.source.grid.rows : 1,
+      ny: grid ? this.gridRows : 1,
       // **基準は「潰していないこの格子」**（Phase 2a）。無限格子を基準にしていたころは、
       // `extent = 1` でも分子と分母が別の引数になり、アンカーの厳密 1 が
       // ティアによって崩れた（BALANCED で 0.9999999999999996）。
@@ -797,7 +955,7 @@ export class LensScene {
       buffer: grid ? 'grid' : 'columnMeans',
       gridW: this.source.grid.cols,
       gridH: this.source.grid.rows,
-      pointCount: grid ? this.source.grid.cols * this.source.grid.rows : this.linePoints,
+      pointCount: grid ? this.source.grid.cols * Math.max(1, this.gridRows) : this.linePoints,
       lineCount: this.lineCount,
       /**
        * 実際に描いている線の点数（Phase 2）。`lineCount` は上限、こちらが実数。
@@ -813,6 +971,8 @@ export class LensScene {
        * ラダーが読むのは `d ≤ 1`（線を実際に描く帯）だけなので、あちらの数は動かない。
        */
       linePoints: grid ? 0 : this.linePoints,
+      // 対称に、線を描くフレームでは 0（格子バッファの最後の状態を漏らさない）
+      gridRowsDrawn: grid ? Math.max(1, this.gridRows) : 0,
       s0: cfg.s0,
       spritePx: cfg.spritePx,
       gain: cfg.gain,
