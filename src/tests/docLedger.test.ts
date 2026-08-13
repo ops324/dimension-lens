@@ -854,7 +854,7 @@ const EXCLUDED: readonly Excluded[] = [
   { file: 'src/tests/collapsePhase.test.ts', table: 1, head: '因子 | 大きさ | 正体', kind: 'gpu-browser', why: 'G9 の −17.58% を 2 因子へ割った内訳。実測側が実 GPU の読み戻しである' },
   { file: 'src/tests/compress.test.ts', table: 1, head: '刻み h | 最大隣接差 | 予算 0.12 比 | `差 / h`', kind: 'iteration-cost', why: '刻みを 64 倍まで細かくした隣接差の掃引。閉形式の上界は同ファイルが別に持つ' },
   { file: 'src/tests/docLedger.test.ts', table: 1, head: '表 | 書かれていた前提 | 本当の引数 | 印字値で計算すると', kind: 'self', why: 'この台帳自身の解説（型 5 の 4 例）。**自分で自分を採点しない**' },
-  { file: 'src/tests/docLedger.test.ts', table: 2, head: '対象 | `npm test` の増分 | `npm run teeth` 換算（×54）', kind: 'self', why: 'この台帳自身の費用表。`npm test` の実測で、機体で変わる' },
+  { file: 'src/tests/docLedger.test.ts', table: 2, head: '対象 | `npm test` の増分 | `npm run teeth` 換算', kind: 'self', why: 'この台帳自身の費用表。`npm test` の実測で、機体で変わる' },
   { file: 'src/tests/framing.test.ts', table: 1, head: '壊し方 | 既存 222 件', kind: 'historical', why: '`core/fit.ts` の表 1 と同じ Phase 1b の記録' },
   { file: 'src/tests/robustness.test.ts', table: 1, head: '穴 | 変異 | 1b の 276 件', kind: 'historical', why: 'Phase 1b の 276 件がこの変異を素通しした記録。いまは `scripts/teeth.mjs`' },
   { file: 'src/tests/robustness.test.ts', table: 2, head: '符号値 | Δ色相 | Δ彩度', kind: 'iteration-cost', why: 'P3 → sRGB の色相差。この表の掃引は `color.test.ts` が別に持っている' },
