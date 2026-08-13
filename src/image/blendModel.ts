@@ -24,6 +24,10 @@
  *
  * ## 実測は 3 つとも外した —— **答えは 4 つ目だった**（Phase 2b・ANGLE Metal / M1 Max）
  *
+ * **引数**: 4 つのモデル列はそれぞれ `blendF32` / `blendF16` / `blendF16FlushSource` /
+ * `blendF16TruncateToZero` に `blendCases()` の `values` を渡した値である
+ * （`BLEND_MODELS` の並び順）。**実測列だけが GPU（`BlendProbe`）**で、node では出ない。
+ *
  * | ケース | 実測 | f32 | fp16 RN | fp16+切り捨て | **fp16 RTZ** |
  * |---|---|---|---|---|---|
  * | `selftest-exact` | 1.75 | 1.75 | 1.75 | 1.75 | 1.75 |

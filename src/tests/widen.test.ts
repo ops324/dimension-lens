@@ -139,7 +139,7 @@ function classifyLine(line: string, following: string): SweepKind | null {
  * **だから数え方をここに固定する。** この数字自体には意味が無く、
  * 「掃引が増えたのに誰も分類していない」を検出するためだけに在る。
  */
-const EXPECTED_SWEEPS = { 量子化: 12, 切り詰め: 16, 点集合: 65, 完全列挙: 158 } as const;
+const EXPECTED_SWEEPS = { 量子化: 12, 切り詰め: 16, 点集合: 65, 完全列挙: 179 } as const;
 
 /**
  * **点集合の規模の台帳**（Phase 2c-viii）。
@@ -184,15 +184,27 @@ const EXPECTED_POINT_SET_SIZES: Readonly<Record<string, number>> = {
   'framing.test.ts:VIEWPORTS': 4,
   'protocol.test.ts:cases': 4,
   'survival.test.ts:CASES': 2,
+  // **2c-ix で足した。** 独立監査が「`EVENTS` から `layout` の 2 本を消しても
+  // 全走行 EXIT=0」を実演した ── そのコメントは「これが 2c-iv のバグを捕まえる経路」である。
+  // 点集合の台帳に無い名前は、この機構が 1 ビットも見ていない
+  'survival.test.ts:EVENTS': 10,
   'survival.test.ts:DIMS': 9,
   'vendor.test.ts:EXPECTED': 7,
   'widen.test.ts:RAMP': 9,
 };
 
-/** `const NAME = [ … ]` の要素数を読む。入れ子と末尾コンマを勘定に入れる */
+/**
+ * `const NAME = [ … ]` の要素数を読む。入れ子と末尾コンマを勘定に入れる。
+ *
+ * **型注釈に `=>` が入ると読めなかった**（Phase 2c-ix・独立監査が実演）──
+ * `[^=]+` が矢印の `=` で止まるので、`const EVENTS: Array<[string, (s: LensScene) => void]>`
+ * は名前ごと見えず、**`EVENTS` から `layout` の 2 本を消しても全走行 EXIT=0** だった。
+ * あの 2 行に付いているコメントは「これが 2c-iv のバグを捕まえる経路」である。
+ * **読めない名前は「無い」と同じ**なので、走査器のほうを直した。
+ */
 function literalSizes(src: string): Map<string, number> {
   const out = new Map<string, number>();
-  const re = /(?:const|let)\s+([A-Za-z_$][\w$]*)(?:\s*:[^=]+)?\s*=\s*\[/g;
+  const re = /(?:const|let)\s+([A-Za-z_$][\w$]*)(?:\s*:[^=]*(?:=>[^=]*)*)?\s*=\s*\[/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
     let i = re.lastIndex;
@@ -238,15 +250,18 @@ describe('掃引の国勢調査', () => {
    * **標本掃引が全体の何割か**を出しておく。完全列挙は密度の概念を持たないので、
    * 型 2 の機構が届く範囲はここで頭打ちになる。
    */
-  it('標本掃引は 93 / 251 本（残り 158 本は完全列挙で密度の概念が無い）', () => {
+  it('標本掃引は 93 / 272 本（残り 179 本は完全列挙で密度の概念が無い）', () => {
     const sample = EXPECTED_SWEEPS.量子化 + EXPECTED_SWEEPS.切り詰め + EXPECTED_SWEEPS.点集合;
     expect(sample).toBe(93);
     // **249 → 251**（2c-viii）。内訳は −1 と +3 である:
     //   −1: 国勢調査が数えていた**自分の説明文**（コメント行）を除いた
     //   +3: 下の「点集合の規模」が台帳とファイルを舐めるための完全列挙 3 本
+    // **251 → 272**（2c-ix）。+21 はすべて `docLedger.test.ts` の完全列挙で、
+    // corpus・台帳・除外表・セルを舐める `for` である。**標本掃引は 1 本も増えていない**
+    // （93 は据え置き）── doc の数を再現する機構は、掃引を広げる機構ではない。
     // **後者は自分で足した掃引を自分で数えている。** 完全列挙なので密度の概念は無く、
     // 幅の主張には使えない ── 本数が増えたことを「広くなった」と読んではいけない。
-    expect(sample + EXPECTED_SWEEPS.完全列挙).toBe(251);
+    expect(sample + EXPECTED_SWEEPS.完全列挙).toBe(272);
   });
 
   /**

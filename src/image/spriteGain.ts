@@ -178,8 +178,14 @@ export function axisCoverage(delta: number, n: number, spritePx: number): number
 }
 
 
-/** `axisCoverage` の「無限に伸びた格子」版。`refNx`/`refNy` を渡さないときの既定 */
-const AXIS_UNBOUNDED = 1 << 24;
+/**
+ * `axisCoverage` の「無限に伸びた格子」版。`refNx`/`refNy` を渡さないときの既定。
+ *
+ * **export しているのは `docLedger.test.ts` がこの既定値を引数として宣言するため**
+ * （Phase 2c-ix）── 台帳の側に `1 << 24` を書き写すと、実装が変わっても
+ * 台帳は自分の写しと比べ続ける（`x/x` の一種）。
+ */
+export const AXIS_UNBOUNDED = 1 << 24;
 
 export interface CollapseConfig {
   /** 基準（潰していない）格子の x 間隔・device px */
@@ -232,6 +238,19 @@ export interface CollapseConfig {
  *
  * ## 実測（`s0 = 2.2478 px` / `S = 8.6548 px` / 格子 378×236）
  *
+ * **最終行は Phase 2a の「畳み」より前の構成である**（2c-ix で実測して書いた）。
+ * `lensScene` の線経路はいま `extentX = 0` で `linePoints = 1` へ畳むので、
+ * `collapseWeight` が返すのは基準格子の被覆そのもの ── **2.2129**（×378）である。
+ * doc の **0.0058472** は「378 点を 1 か所へ重ねた」構成の値で、
+ * `docLedger.test.ts` が両方を数値で記録している。
+ *
+ * **`image/blendModel.ts` の `GAIN_TIMES_SAMPLE_WEIGHT` がこの古い値を焼いているのは
+ * 正しい** ── あれが再現するのは §4.6 の「深度 378 の二値実験」、つまり畳む前の構成である。
+ * **誤っているのは、この表が構成を書いていないこと**のほうである（§7.10 の型 5）。
+ * なお同じ表の `gain` も `gainFor(2.2478) = 0.4530725567341494` で、
+ * `blendModel.ts` のリテラル `0.4530724335144705`（`LensScene` の実 s0 = 2.247834… の値）とは
+ * 7 桁目から違う ── **表に書かれた引数が丸められている**。
+ *
  * | 構成 | `sampleWeight` | 意味 |
  * |---|---|---|
  * | 格子 `d = 2` | **1**（厳密） | アンカー |
@@ -248,7 +267,13 @@ export function collapseWeight(c: CollapseConfig): number {
    * 分子と分母は `n` の違う呼び出しになり、`axisCoverage` の中の
    * `half = (n − 1)/2` と `x = t − (i − half)·delta` の丸めが変わる。
    *
-   * 実測（**CI が ubuntu の runner で BALANCED ティアに落ちて初めて出た**）:
+   * 実測（**CI が ubuntu の runner で BALANCED ティアに落ちて初めて出た**）。
+   * **引数**: `axisCoverage(s0, n, K_SPRITE · s0)`。`spritePx` は **`K_SPRITE · s0`**
+   * （HIGH で 8.65403）であって、上の節が印字している **`S = 8.6548` ではない** ──
+   * そちらを渡すと 6 セルとも 1.4875959800721417 になって 1 つも再現しない（§7.10 の型 5）。
+   * `s0` は HIGH **2.2478** / BALANCED **3.3851792828685254**（§0 のアンカー表）。
+   * なお `A` は `spritePx/s0 = K_SPRITE` にしか依らない（尺度不変）ので、
+   * **ティアの差は最終 ulp だけ**である ── それがこの表の主張そのものでもある。
    *
    * | ティア | 格子 | `A(unbounded)` | `A(n)` | `sampleWeight` |
    * |---|---|---|---|---|
