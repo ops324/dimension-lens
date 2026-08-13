@@ -58,6 +58,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -199,6 +200,28 @@ const MUTATIONS = [
   { phase: '2c-viii', name: '標本を 1 枚へ戻す（2c-iv の教訓の撤回・掃引の幅が縮む）', observed: 1,
     file: 'src/tests/survival.test.ts',
     find: "  // **退化した画像も通す**（2c-iv の教訓: 標本を 1 枚しか通さない測定は「測った」と書けない）\n  ['グレースケール / BALANCED', makeGrayscaleRamp(), 'BALANCED'],\n",
+    replace: '' },
+
+  // ---- Phase 2c-ix（doc の数を関数で再現する台帳）----
+  //
+  // **台帳が doc の**テキスト**を読んでいることを、doc を壊して確かめる。**
+  // 期待値を台帳の側に書いた瞬間（`expected: fn(args)`）、doc の数を全置換しても緑になる ──
+  // 独立監査がその経路を実演した。ここが噛まないなら、台帳は doc を読んでいない。
+  { phase: '2c-ix', name: 'doc の表の数を 1 つ書き換える（台帳が doc を読んでいるかの確認）', observed: 1,
+    file: 'src/image/halfFloat.ts',
+    find: ' * | 512 | 0.205200 | **−4.94%** |',
+    replace: ' * | 512 | 0.205300 | **−4.94%** |' },
+  // 実装の側。階段の丸めを 1 つ落とすと停止表が再現しなくなる
+  { phase: '2c-ix', name: '飽和天井の丸めを切り下げにする（2048·δ 以上でなくなる）', observed: 1,
+    file: 'src/image/halfFloat.ts',
+    find: '  return Math.pow(2, Math.ceil(Math.log2(2048 * delta)));',
+    replace: '  return Math.pow(2, Math.floor(Math.log2(2048 * delta)));' },
+  // **被覆検査の歯。** 除外表から 1 行消すと「台帳 ∪ 除外表 ⊇ 全表」が破れる。
+  // 台帳の 54 本のうちテストを壊す 2 本目だが、守っているのが**被覆そのもの**なので、
+  // 壊す対象がテストになるのは 2c-viii の 1 本と同じ理由である。
+  { phase: '2c-ix', name: '除外表から 1 行消す（被覆検査 ── 表を足しても黙って通る形へ戻す）', observed: 1,
+    file: 'src/tests/docLedger.test.ts',
+    find: "  { file: 'src/copy.ts', table: 1, kind: 'non-numeric', why: 'エラーコードが実入力から到達するかの ✅/❌。数が無い' },\n",
     replace: '' },
 
   // ---- Phase 2c-vi（配線の生存の行列）----
@@ -420,7 +443,7 @@ function ranTests(out) {
  * 3 つ組が既存と一致する変異は、本数だけ増やして守るものを増やさない。
  * 下の重複検査が機械で見る。
  */
-const EXPECTED_MUTATIONS = 54;
+const EXPECTED_MUTATIONS = 57;
 
 if (MUTATIONS.length < EXPECTED_MUTATIONS) {
   console.error(
@@ -430,14 +453,119 @@ if (MUTATIONS.length < EXPECTED_MUTATIONS) {
   process.exit(1);
 }
 
-/** **複製の検出** ── 本数だけ増える歯を機械で止める（2c-vii が手で見つけた型）。 */
+/** 変異の安定した鍵。**新しいフィールドを足さない** ── 台帳の行そのものから作る */
+const idOf = (m) => `${m.phase} / ${m.name}`;
+
+/**
+ * **歯の名簿**（Phase 2c-ix）。`EXPECTED_MUTATIONS` は**本数**しか見ない。
+ *
+ * 実演（2c-ix・独立監査が後退経路を mirror で走らせて見つけた 2 つのうちの 1 つ）──
+ * **変異を 1 本消して、別の 1 本を足せば本数は 54 のまま**である。消したのが
+ * 2c-vi が実バグ（`linePoints` のキャッシュ漏れ）を捕まえた歯で、足したのが
+ * `find` を既存の部分文字列にした近似複製だと、**下の複製検査も本数のラチェットも
+ * 何も言わない**。全走行 EXIT=0 のまま歯が 1 本消える。
+ *
+ * → **消えたことが名前で差分に出る**ようにする。`- '2c-vi / 描いていない線の…'` は
+ * 「54 が 54 のまま」より読める。**人が名前を消せば通るのは変わらない**（§7.10 の型 1）。
+ * 変えたのは通りやすさではなく、**通った跡が査読に出るかどうか**である。
+ */
+const EXPECTED_IDS = [
+  '2b / bloom の閾値を d=0 の平均色の下へ下げる（G9 の測定点が bloom の内側へ入る）',
+  '2b / 輝度の重みを等分に取り違える（別の量に対する柵になる）',
+  '2b / ニーを平均色の下へ動かす（錨が後処理で動きうる位置へ）',
+  '2b / 圧縮の強度から門を外す（アンカー窓で圧縮が立ち上がる）',
+  '2c / 強度を「設計峰からの逆算」へ戻す（有限の峰では上限が 1 を超える）',
+  '2c / ニーを 0.9 へ動かす（2b では 11 本すべてが素通しした変異）',
+  '2c / 包絡を配線から外す（構図がまた経過時間の関数へ戻る）',
+  '2c / 包絡から門を外す（窓の縁で写真が突然縮む）',
+  '2c / 掃く位相を 4096 → 16 に減らす（包絡が包絡でなくなる）',
+  '2c-iv / 包絡の引き直しに `dimChanged` の門を戻す（resize 1 回で包絡が消える）',
+  '2c-vii / ホールドの単調性を外す（傾斜帯の後退が消えて呼吸に戻る）',
+  '2c-vii / 位相の掃きを 1 本にする（包絡が位相 0 の値へ戻る = 2c-i が落とした偽）',
+  '2c-vii / 門の傾斜幅を潰す（窓の外がいきなり全開になる = 帯が消える）',
+  '2c-vii / 畳みを止めて格子の行数を深度から切り離す（n ≤ 512 の標本依存が消える）',
+  '2c-viii / 標本を 1 枚へ戻す（2c-iv の教訓の撤回・掃引の幅が縮む）',
+  '2c-ix / doc の表の数を 1 つ書き換える（台帳が doc を読んでいるかの確認）',
+  '2c-ix / 飽和天井の丸めを切り下げにする（2048·δ 以上でなくなる）',
+  '2c-ix / 除外表から 1 行消す（被覆検査 ── 表を足しても黙って通る形へ戻す）',
+  '2c-vi / 描いていない線の点数を漏らす（キャッシュが観測面へ出る）',
+  '2b / fp16 の丸めを最近接に取り違える（監査のモデルへ戻す）',
+  '2b / 最近接偶数を「常に上へ」にする（ties-to-even を落とす）',
+  '2b / 二値ケースの暗い側を正規数にする（非正規域を問わなくなる）',
+  '2b / 判定の許容を最小の分離幅より広げる（2 モデルが同時に一致する）',
+  '2b / 光過敏の配慮が回転へ届かない（2a まで実際にこうだった）',
+  '2b / 配慮を測定用の凍結と共用する（測定が終わると配慮が解ける）',
+  '2b / 色場 `image+mean` を恒等にする（G12 が同じ絵を 2 回測る）',
+  '2b / 色場の差し替えが位置も触る（幾何固定という前提を壊す）',
+  '2a / 中心の位相を常に 0 にする（＝ 図の中心にフラグメントが在ると仮定する）',
+  '2a / 位相減衰を恒等にする（1c まで暗黙にそう扱っていた）',
+  '2a / 位相の減衰に F を使わない（k を取り違える）',
+  '2a / 潰れた軸を畳まない（1b の挙動へ戻す = 深度 378）',
+  '2a / 畳んだ点数の下限を 0 にする（1 点すら描かなくなる）',
+  '2a / half-float の非正規数を 0 に潰す（暗い列が消えたことを観測できなくする）',
+  '2a / 潰しの基準を無限格子へ戻す（アンカーの厳密 1 がティア依存に戻る）',
+  '2a / HDR 自己検査の値を 1.0 以下にする（1.0 超を区別する口の意味が消える）',
+  '1c / safeDist をリテラル 2.4 に',
+  '1c / 板を転送リストから外す',
+  '1c / probe のバイト列を 1 バイト削る',
+  '1c / planResize の丸めを切り捨てに',
+  '1c / MAX_CANONICAL_PIXELS を 4 倍',
+  '1c / MAX_SOURCE_PIXELS を半分に',
+  '1c / lift の原色を srgb 固定に',
+  '1c / columnLine の原色を srgb 固定に',
+  '1c / computeStats の原色を srgb 固定に',
+  '1c / linearizeRgba が gamut を捨てる',
+  '1c / C_MIN_P95 を 10 倍',
+  '1c / L_MIN_SPAN を 10 倍',
+  '1c / axisPresence が常に全 true',
+  '1c / lensScene が退化を読まない',
+  '1c / extent の 0 固定を外す（退化軸が dimLevel で開く）',
+  '1c / HEIF の brand 判定を殺す',
+  '1c / decode.ts に日本語の文言を戻す',
+  '1b / DEFAULT_FILL を 0.86 → 0.95',
+  '1b / 画角の半角変換を /360 → /180',
+  '1b / gainFor のクランプを外す',
+  '1b / LINE_MAX_POINTS を 2048 に',
+  '1a-iii / instanceCount = 1 の明示を消す',
+];
+
+{
+  const have = new Set(MUTATIONS.map(idOf));
+  const gone = EXPECTED_IDS.filter((id) => !have.has(id));
+  if (gone.length > 0) {
+    console.error(`名簿にある歯が ${gone.length} 本、台帳から消えている（本数は ${MUTATIONS.length} のまま）:`);
+    for (const id of gone) console.error(`  ${id}`);
+    console.error('消す・改名するなら、同じ PR で EXPECTED_IDS からも消すこと。');
+    process.exit(1);
+  }
+}
+
+/**
+ * **複製の検出** ── 本数だけ増える歯を機械で止める（2c-vii が手で見つけた型）。
+ *
+ * **鍵を「規則のテキスト」から「変異後のファイルの中身」へ変えた**（Phase 2c-ix）。
+ * 2c-viii は `file + find + replace` の 3 つ組で照合していたが、**`find` を既存の
+ * 部分文字列に取り替えるだけで、同じ変異が別物に見える**（独立監査が実演）。
+ * 同じ結果のファイルを作る 2 本は、書き方が何であれ同じ 1 本の歯である。
+ *
+ * **これでも `0.2` を `0.21` にした近似複製は通る** ── 中身が違うので別の変異になる。
+ * そこは機械では決まらない（`COMPRESS_KNEE` の 0.2 と 0.9 は実際に別の歯である）。
+ */
 {
   const seen = new Map();
   const dupes = [];
+  const cache = new Map();
   for (const m of MUTATIONS) {
-    const key = `${m.file} ${m.find} ${m.replace}`;
-    if (seen.has(key)) dupes.push(`${m.phase} / ${m.name}\n    ← ${seen.get(key)} と同一`);
-    else seen.set(key, `${m.phase} / ${m.name}`);
+    const p = join(ROOT, m.file);
+    if (!cache.has(p)) cache.set(p, readFileSync(p, 'utf8'));
+    const src = cache.get(p);
+    // 対象行が無い変異は下の走行が `stale` で赤にする。ここでは規則のテキストで照合しておく
+    const effect = src.includes(m.find)
+      ? (m.all ? src.split(m.find).join(m.replace) : src.replace(m.find, m.replace))
+      : `<未適用>\0${m.find}\0${m.replace}`;
+    const key = `${m.file}\0${createHash('sha256').update(effect).digest('hex')}`;
+    if (seen.has(key)) dupes.push(`${idOf(m)}\n    ← ${seen.get(key)} と**変異後のファイルが 1 バイト違わない**`);
+    else seen.set(key, idOf(m));
   }
   if (dupes.length > 0) {
     console.error(`台帳に複製が ${dupes.length} 本ある（本数だけ増えて守るものが増えない）:\n  ${dupes.join('\n  ')}`);
@@ -449,13 +577,31 @@ if (MUTATIONS.length < EXPECTED_MUTATIONS) {
  * **`observed` の完全性。** 2c-vii は `observed` を 22/53 から補完したが、
  * **自分で足した 1 本にだけ付け忘れていた**（2c-viii で実測して埋めた）。
  * `failed < undefined` は常に false なので、欠けた行では弱りの検出が静かに効かない。
+ *
+ * **`typeof === 'number'` では足りなかった**（Phase 2c-ix）── 独立監査が実演した
+ * いちばん重い後退経路は「**全 54 本の `observed` を 0 に一括置換する**」である。
+ * 0 は数なのでこの検査を通り、`failed < 0` は常に false なので
+ * **弱りの検出が 54 本ぶん丸ごと無効になる**。1 行の置換で、EXIT=0 のまま。
+ *
+ * → 1 本ずつは **1 以上の整数**であることを要求し、**総和にラチェットを置く**。
+ * 総和にするのは、1 本だけ下がる正当なリファクタ（実際に `failed` が減った）を
+ * 妨げずに、**一括して薄めることだけ**を赤にするためである。
  */
+const EXPECTED_OBSERVED_TOTAL = 130;
+
 {
-  const missing = MUTATIONS.filter((m) => typeof m.observed !== 'number');
-  if (missing.length > 0) {
+  const bad = MUTATIONS.filter((m) => !Number.isInteger(m.observed) || m.observed < 1);
+  if (bad.length > 0) {
+    console.error(`\`observed\` が 1 以上の整数でない変異が ${bad.length} 本ある ── そこでは弱りの検出が効かない:`);
+    for (const m of bad) console.error(`  ${idOf(m)} → ${m.observed}`);
+    process.exit(1);
+  }
+  const total = MUTATIONS.reduce((a, m) => a + m.observed, 0);
+  if (total < EXPECTED_OBSERVED_TOTAL) {
     console.error(
-      `\`observed\` の無い変異が ${missing.length} 本ある ── そこでは弱りの検出が効かない:\n  `
-        + missing.map((m) => `${m.phase} / ${m.name}`).join('\n  '),
+      `台帳の \`observed\` の総和が ${total}（${EXPECTED_OBSERVED_TOTAL} あったはず）。`
+        + '\n一括で薄めると弱りの検出が効かなくなる。正当に減ったのなら、'
+        + '\nこの PR の中で EXPECTED_OBSERVED_TOTAL も下げること（差分に出る）。',
     );
     process.exit(1);
   }
