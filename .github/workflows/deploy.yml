@@ -104,6 +104,70 @@ jobs:
         with:
           path: dist
 
+  # **ひとつ前の main run が cancelled なら赤くする**（Phase 2c-ix の続き）。
+  #
+  # ## なぜ要るか —— 「消されないはず」を人が毎フェーズ確かめる形は規律である
+  #
+  # 上の `concurrency` で main の run は互いを消さないようにした。しかし**それが効いて
+  # いることを毎フェーズ人が `gh run list` で見る**運用は、§7.10 が「規律を 9 つ書いても
+  # 止まらない」と記録している型そのものになる。→ **次の run に前の run を見張らせる。**
+  #
+  # ## 1 段だけ遡れば足りる
+  #
+  # run が消されるとき、**消した側の run が必ずその直後に居る**。だから直後の run に
+  # 1 つ前を見せれば取り逃がさない。基準日や基準 run id の**リテラルが要らず**、
+  # 過去の cancelled（31694020549 / 31530207696 / 31512519511）にも当たらない。
+  #
+  # ## 実測で確かめた（憶測で足していない）
+  #
+  # 同じ判定式を実 API に通してある:
+  #   - 現在地 31701186834（いまの main）→ 直前は 31699212208 / success → **緑**
+  #   - 現在地 31694063986（**2c-ix の事故の直後の run**）→ 直前は 31694020549 /
+  #     `7d51c96` / cancelled → **赤**
+  # つまり**実際に起きた事故を再生して、この機構が捕まえることを確認済み**である。
+  #
+  # `build` を待たない（`needs` 無し）。見ているのは**履歴**であってこの run の中身では
+  # ないので、22 分待つ理由が無い ── 消されたことは即座に分かるほうがよい。
+  #
+  # 人が意図して cancel したときもここは赤くなる。**それでよい** ── 意図の有無に依らず、
+  # そのコミットは「ゲートの走っていない main run」を持つからである（§0 の「赤いが
+  # 中身が無い」は、意図ではなく状態の話である）。
+  history:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?branch=main&event=push&per_page=30" \
+            --jq "[.workflow_runs[] | select(.id < $GITHUB_RUN_ID)] | max_by(.id)
+                  | if . == null then \"none\" else \"\(.id) \(.head_sha[0:7]) \(.conclusion)\" end")"
+          echo "ひとつ前の main run: $prev"
+          case "$prev" in
+            *cancelled)
+              printf '%s\n' \
+                '## ひとつ前の main run が cancelled です' \
+                '' \
+                "    $prev" \
+                '' \
+                'その run ではゲート（test / teeth / ladder --structural / gecko）が走っていません。' \
+                'main の run を互いに消させないための concurrency の分離が効いていない可能性があります。' \
+                '' \
+                '確認: gh run view <上の run id> --json jobs' \
+                '' \
+                '人が意図して cancel した場合もここは赤くなります。その場合は、そのコミットを' \
+                '検査した run が別に在るかを確かめてください。' \
+                >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+          # `"…（$prev）。"` と**隣接して書いてはいけない**（実測で踏んだ）。
+          # `）` は U+FF09 = `EF BC 89` で、bash は先頭バイト `EF` を変数名の一部として
+          # 食べる ── `$prev` が「未定義変数 `prev\xEF`」になって空に潰れ、残り 2 バイトが
+          # 不正な UTF-8 として出る。zsh は多バイト境界を正しく扱うので**手元では再現せず、
+          # CI（bash）でだけ文字化けする**。値は必ず `%s` へ渡す。
+          printf 'ひとつ前の main run は cancelled ではない: %s\n' "$prev" >> "$GITHUB_STEP_SUMMARY"
+
   # Gecko（Firefox）の EXIF 向き判定を 1 回測る（Phase 2a で足した）。
   #
   # SPEC §4.12 の最後の空欄がこれで、1c は「**測れないのではなく入れていない**。
