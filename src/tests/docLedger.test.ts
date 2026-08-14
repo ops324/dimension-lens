@@ -838,8 +838,13 @@ const EXCLUDED: readonly Excluded[] = [
   { file: 'src/core/framingEnvelope.ts', table: 2, head: 'd | `aX` の argmax を外した位相 | 外したときの最悪比', kind: 'iteration-cost', why: '`aX` の argmax を外した位相の比。512 位相 × 6 スロットを全点で取り直す' },
   { file: 'src/core/framingEnvelope.ts', table: 5, head: '標本 | d | `need` の比', kind: 'historical', why: '**引用された 3 標本が repo に無い**（型 3・§7.10）。`SPECIMEN_LEDGER` の同名標本は別物' },
   { file: 'src/core/framingEnvelope.ts', table: 7, head: 'K | 横長 `d=5` の `need` 比 | 1 スロット | 21 スロット', kind: 'iteration-cost', why: 'K を 8192 まで上げる表。1 スロット 1,634 ms × 21 スロット = 34 s' },
-  { file: 'src/core/framingEnvelope.ts', table: 8, head: '標本 | d | 成分 | M=4096 | M=65536 | 本物か', kind: 'iteration-cost', why: '`d` を 0.005 刻みで 1001 点掃いた表（M = 65536 込み）' },
-  { file: 'src/core/framingEnvelope.ts', table: 9, head: '標本 | 下回った点 | 最悪 | 不足', kind: 'iteration-cost', why: '`envelopeFor` が厳密値を下回る点。0.005 刻み 1001 点 × 6 標本で、1 セルあたり 28〜32 秒' },
+  { file: 'src/core/framingEnvelope.ts', table: 8, head: '環境 | 中央値 | 最小', kind: 'gpu-browser', why: 'Node と実 Chrome の `framingEnvelope` の ms。ランタイムと機体で変わる（`ingest/decode.ts` の表 1 と同じ型）' },
+  { file: 'src/core/framingEnvelope.ts', table: 9, head: '`d` | カメラ距離 | 跳び | 図の実寸 `aX` | **見かけの大きさ**', kind: 'historical', why: '`max` だったときの実 GPU 実測。**現在の実装はこの値を出さない**（`core/fit.ts` の表 1 と同じ型）' },
+  { file: 'src/core/framingEnvelope.ts', table: 12, head: '`d` | 補間後のカメラ距離 | 跳び | **見かけの大きさ**', kind: 'iteration-cost', why: '13 点 × 120 フレームを `LensScene` に通した実測ログ。**段が 0 であることは `framingEnvelope.test.ts` の「節点の両側で連続」が全 20 境界を採点する**' },
+  { file: 'src/core/framingEnvelope.ts', table: 13, head: '標本 | `max`（旧）の下回り | 補間の下回り', kind: 'iteration-cost', why: '0.005 刻み 1001 点 × 4 標本。表 11 と同じ費用（1 セルあたり 28〜32 秒）' },
+  { file: 'src/core/framingEnvelope.ts', table: 14, head: '`d = 1.255`・No.0 / HIGH | `need` | `M = 65536` に対する不足', kind: 'iteration-cost', why: '`M = 65536` 込み。表 10 と同じ費用' },
+  { file: 'src/core/framingEnvelope.ts', table: 10, head: '標本 | d | 成分 | M=4096 | M=65536 | 本物か', kind: 'iteration-cost', why: '`d` を 0.005 刻みで 1001 点掃いた表（M = 65536 込み）' },
+  { file: 'src/core/framingEnvelope.ts', table: 11, head: '標本 | 下回った点 | 最悪 | 不足', kind: 'iteration-cost', why: '`envelopeFor` が厳密値を下回る点。0.005 刻み 1001 点 × 6 標本で、1 セルあたり 28〜32 秒' },
   { file: 'src/image/blendModel.ts', table: 1, head: 'モデル | 仮定 | `blendF32` / `blendF16` / `blendF16FlushSource`', kind: 'non-numeric', why: '3 つのモデルの仮定を並べた対照表。数が 1 つも無く、列は文である' },
   { file: 'src/image/columnLine.ts', table: 1, head: '入力（同一幾何・深度 378） | 位相を除いた残差', kind: 'gpu-browser', why: '位相を除いた残差。実 GPU の加算合成の読み戻しで、node では作れない' },
   { file: 'src/image/spriteGain.ts', table: 1, head: 's0 | S = k·s0 | gainFor | 誤差', kind: 'historical', why: '`gainFor` の**クランプを入れる前**の式の値。現在の export では `MIN_CALIBRATED_S0` で潰れる（写経すると `x/x`）' },
@@ -878,7 +883,7 @@ const EXCLUDED: readonly Excluded[] = [
  * 被覆検査は「表を足したら除外を 1 行足す」で永久に通る。
  * 増やすときはこの数も同じ PR で上げること（差分に出る）。
  */
-const EXPECTED_EXCLUDED = 45;
+const EXPECTED_EXCLUDED = 50;
 
 /** **台帳のラチェット。** 減らすならこの数も同じ PR で下げること */
 const EXPECTED_LEDGER_CELLS = 96;

@@ -291,6 +291,29 @@ const MUTATIONS = [
     find: '      const y1 = Math.max((((j + 1) * rows) / ny) | 0, y0 + 1);',
     replace: '      const y1 = y0 + 1;' },
 
+  // ---- Phase 2c-xi（包絡のスロット量子化）----
+  //
+  // **この欠陥には歯が 1 本も無かった。** `framingEnvelope.test.ts` に
+  // `'刻みの間は隣接スロットの max'` という名前のテストが在ったが、**恒真だった** ──
+  // 挟む点に `d = 3` / `d = 3.25` を選んでおり、標本 No.0 ではその 2 スロットが
+  // **3 成分ともビット一致する**（隣接 20 対のうちビット一致は 3 対だけで、その 1 つ）。
+  // `max(lo, hi) === lo === hi === 補間(lo, hi, t)` なので、`max` でも補間でも
+  // `floor` だけでも `ceil` だけでも緑になる。
+  //
+  // 実測（実 GPU・ANGLE Metal / M1 Max・988×778・位相 0 凍結・No.0 / HIGH）:
+  // `max` では `d = 0.4999 → 0.5001` でカメラ距離が **+38.356%** 跳び、
+  // 図の実寸は +0.02% しか動かないので**見かけの大きさが −27.708%** になる。
+  //
+  // この 1 本は `envelopeFor` を `max` へ戻す ── つまり**欠陥そのものを復元する**。
+  // 噛むのは 2c-xi で足した 2 本（節点の両側の連続性・中点が上端に張り付かないこと）。
+  // 既存の 454 件は 1 件も噛まない（実測: 補間を入れて全件緑、`max` へ戻して 2 件だけ赤）。
+  { phase: '2c-xi', name: '刻みの間を補間から max へ戻す（0.25 の倍数でカメラが 38% 跳ぶ）', observed: 2,
+    file: 'src/core/framingEnvelope.ts',
+    find: '  const t = q - Math.floor(q);\n  return {\n    aX: a.aX + (b.aX - a.aX) * t,\n'
+      + '    aY: a.aY + (b.aY - a.aY) * t,\n    zHi: a.zHi + (b.zHi - a.zHi) * t,\n  };',
+    replace: '  return {\n    aX: a.aX > b.aX ? a.aX : b.aX,\n'
+      + '    aY: a.aY > b.aY ? a.aY : b.aY,\n    zHi: a.zHi > b.zHi ? a.zHi : b.zHi,\n  };' },
+
   // ---- Phase 2c-vi（配線の生存の行列）----
   //
   // 線を描いていないフレームで線バッファの最後の状態を漏らす。`rebuildLine` は `!grid` の
@@ -510,7 +533,7 @@ function ranTests(out) {
  * 3 つ組が既存と一致する変異は、本数だけ増やして守るものを増やさない。
  * 下の重複検査が機械で見る。
  */
-const EXPECTED_MUTATIONS = 61;
+const EXPECTED_MUTATIONS = 62;
 
 if (MUTATIONS.length < EXPECTED_MUTATIONS) {
   console.error(
@@ -566,6 +589,7 @@ const EXPECTED_IDS = [
   '2c-x / 帯が 1 行になっても畳む（畳みが間引きへ変わる範囲を開ける） → src/image/grid.ts',
   '2c-x / 潰しの補正に畳んだ間隔を渡さない（雲が最大 9.6 倍暗くなる） → src/scene/lensScene.ts',
   '2c-x / 畳みの帯を 1 行にする（平均が間引きへ変わる） → src/scene/lensScene.ts',
+  '2c-xi / 刻みの間を補間から max へ戻す（0.25 の倍数でカメラが 38% 跳ぶ） → src/core/framingEnvelope.ts',
   '2c-vi / 描いていない線の点数を漏らす（キャッシュが観測面へ出る） → src/scene/lensScene.ts',
   '2b / fp16 の丸めを最近接に取り違える（監査のモデルへ戻す） → src/image/blendModel.ts',
   '2b / 最近接偶数を「常に上へ」にする（ties-to-even を落とす） → src/image/blendModel.ts',
@@ -673,7 +697,7 @@ const EXPECTED_IDS = [
  * これで「締めて下げる」の原資が無くなる。**ただし塞いだのは原資であって経路ではない**
  * ── 実測が本当に増えた PR では、また同じことができる。
  */
-const EXPECTED_OBSERVED_TOTAL = 149;
+const EXPECTED_OBSERVED_TOTAL = 151;
 
 {
   const bad = MUTATIONS.filter((m) => !Number.isInteger(m.observed) || m.observed < 1);

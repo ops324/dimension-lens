@@ -382,14 +382,120 @@ describe('スロットの表', () => {
     expect([...cache.filled]).toEqual(filledAfter);
   });
 
-  /** 刻みの間では**挟む 2 つの大きいほう**を返す（安全側） */
-  it('刻みの間は隣接スロットの max', () => {
-    const cache = createEnvelopeCache();
-    const lo = envelopeFor(cache, base, count, ALL_PRESENT, 3, cascadeDist);
-    const hi = envelopeFor(cache, base, count, ALL_PRESENT, 3.25, cascadeDist);
-    const mid = envelopeFor(cache, base, count, ALL_PRESENT, 3.1, cascadeDist);
-    expect(mid.aX).toBe(Math.max(lo.aX, hi.aX));
-    expect(mid.aY).toBe(Math.max(lo.aY, hi.aY));
-    expect(mid.zHi).toBe(Math.max(lo.zHi, hi.zHi));
+  /**
+   * ## ここに在った `'刻みの間は隣接スロットの max'` は**恒真だった**（Phase 2c-xi で実測）
+   *
+   * あのテストは `d = 3` と `d = 3.25` を挟んで `mid === max(lo, hi)` を見ていた。
+   * ところが標本 No.0 では **その 2 スロットが 3 成分ともビット一致する** ──
+   * 隣接 20 対のうちビット一致するのは `3–3.25` / `3.25–3.5` / `3.5–3.75` の **3 対だけ**で、
+   * テストはそのうちの 1 つを引いていた（No.0 の候補上位 32 は全部が彩度 0 の黒枠の点なので、
+   * `extent[3]` / `extent[4]` が動いても包絡が変わらない ── `ENVELOPE_CANDIDATES` の項）。
+   *
+   * `max(lo, hi) === lo === hi === 補間(lo, hi, t)` なので、**あの採点者は
+   * `max` と補間を区別できなかった**。`floor` だけ返す実装でも `ceil` だけ返す実装でも
+   * 緑になる。**38.356% の段には歯が 1 本も無かった。**
+   *
+   * → 下の 3 本で置き換える。**節点を選ぶときは「割れている対」であることを
+   * テスト自身に確かめさせる**（恒真へ戻らないための歯）。
+   */
+  describe('刻みの間の埋め方（Phase 2c-xi）', () => {
+    /** 3 成分のどれかが 1% 以上違う隣接対。**恒真なテストを書かないための土台** */
+    function splitPairs(): number[] {
+      const cache = createEnvelopeCache();
+      const at = (d: number) => envelopeFor(cache, base, count, ALL_PRESENT, d, cascadeDist);
+      const out: number[] = [];
+      for (let k = 1; k < ENVELOPE_SLOTS; k++) {
+        const a = at((k - 1) * ENVELOPE_DIM_STEP);
+        const b = at(k * ENVELOPE_DIM_STEP);
+        const rel = (x: number, y: number) => (x === y ? 0 : Math.abs(x - y) / Math.max(x, y));
+        if (Math.max(rel(a.aX, b.aX), rel(a.aY, b.aY), rel(a.zHi, b.zHi)) > 0.01) out.push(k);
+      }
+      return out;
+    }
+
+    it('割れている隣接対が実在する（この下の 2 本が恒真でないことの担保）', () => {
+      const split = splitPairs();
+      // 実測: 標本 No.0 / HIGH では 20 対のうち 17 対が 1% 以上割れている。
+      // ビット一致するのは 3–3.25 / 3.25–3.5 / 3.5–3.75 の 3 対だけ。
+      expect(split.length).toBeGreaterThanOrEqual(10);
+      // 旧テストが引いていた対（d = 3 → 3.25、すなわち k = 13）は**割れていない**
+      expect(split).not.toContain(13);
+    });
+
+    /**
+     * **節点をまたいで跳ばない。** これが 2c-xi が閉じた当の性質である。
+     *
+     * `max` ではここが 38.356% になる（実 GPU・`d = 0.4999 → 0.5001`）。
+     * 採点者は `envelopeFor` の式を書き戻さない ── 見るのは
+     * 「**境界の両側で値が一致すること**」だけである。
+     */
+    it('節点の両側で連続（`max` なら 38% 跳ぶ）', () => {
+      const cache = createEnvelopeCache();
+      const at = (d: number) => envelopeFor(cache, base, count, ALL_PRESENT, d, cascadeDist);
+      const eps = 1e-9;
+      let worst = 0;
+      let worstAt = 0;
+      for (let k = 1; k < ENVELOPE_SLOTS; k++) {
+        const d = k * ENVELOPE_DIM_STEP;
+        const lo = at(d - eps);
+        const hi = at(d + eps);
+        for (const key of ['aX', 'aY', 'zHi'] as const) {
+          const a = lo[key];
+          const b = hi[key];
+          const rel = a === b ? 0 : Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b));
+          if (rel > worst) { worst = rel; worstAt = d; }
+        }
+      }
+      // 弦は連続なので、残るのは eps ぶんの傾きだけ（実測 1.2e-9 未満）
+      expect(worst, `最悪は d = ${worstAt}`).toBeLessThan(1e-6);
+    });
+
+    /**
+     * **割れている対では、中点が上端より真に小さい。**
+     *
+     * `max` は `mid === hi` を返すので、この 1 本だけでも `max` は落ちる。
+     * 「弦の式」ではなく「上端に張り付かないこと」を見ているので、
+     * 実装を書き戻す形（§7.1 の `reconstructMean` 型）になっていない。
+     */
+    it('割れている対の中点は上端に張り付かない（`max` なら張り付く）', () => {
+      const cache = createEnvelopeCache();
+      const at = (d: number) => envelopeFor(cache, base, count, ALL_PRESENT, d, cascadeDist);
+      const split = splitPairs();
+      let checked = 0;
+      for (const k of split) {
+        const dLo = (k - 1) * ENVELOPE_DIM_STEP;
+        const dHi = k * ENVELOPE_DIM_STEP;
+        const lo = at(dLo);
+        const hi = at(dHi);
+        const mid = at((dLo + dHi) / 2);
+        for (const key of ['aX', 'aY', 'zHi'] as const) {
+          const a = lo[key];
+          const b = hi[key];
+          if (a === b) continue;
+          const upper = Math.max(a, b);
+          const lower = Math.min(a, b);
+          // 弦は両端の閉区間に入り、かつ上端にも下端にも張り付かない
+          expect(mid[key], `d = ${dLo}→${dHi} の ${key}`).toBeLessThan(upper);
+          expect(mid[key], `d = ${dLo}→${dHi} の ${key}`).toBeGreaterThan(lower);
+          checked++;
+        }
+      }
+      expect(checked).toBeGreaterThan(20);
+    });
+
+    it('節点そのものでは厳密値と一致する（表は節で正直）', () => {
+      const cache = createEnvelopeCache();
+      const scratch = createEnvelopeScratch(ENVELOPE_CANDIDATES);
+      const extent = new Float64Array(5);
+      for (const k of [0, 2, 8, 13, ENVELOPE_SLOTS - 1]) {
+        const d = k * ENVELOPE_DIM_STEP;
+        const viaCache = envelopeFor(cache, base, count, ALL_PRESENT, d, cascadeDist);
+        extentFor(d, ALL_PRESENT, extent);
+        const direct = framingEnvelope(base, count, extent, cascadeDist, scratch);
+        expect(viaCache.aX).toBe(direct.aX);
+        expect(viaCache.aY).toBe(direct.aY);
+        expect(viaCache.zHi).toBe(direct.zHi);
+      }
+    });
   });
 });
