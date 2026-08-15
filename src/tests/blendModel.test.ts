@@ -18,9 +18,10 @@ import {
   F16_MAX,
   F16_MIN_NORMAL,
   F16_MIN_SUBNORMAL,
-  OBSERVED_BLEND_MODEL,
+  RENDERER_BLEND_MODELS,
   binaryContribution,
   blendCases,
+  blendModelForRenderer,
   classifyBlend,
   f16,
   f16TruncateToZero,
@@ -234,13 +235,92 @@ describe('判定', () => {
   });
 
   /**
-   * **Phase 2b の実測結果を、コメントではなく機械が読める形で固定する。**
-   * ここを書き換えずにモデルの名前を変えると落ちる。
+   * **実測結果を、コメントではなく機械が読める形で固定する。**
+   *
+   * 2b は `OBSERVED_BLEND_MODEL` というグローバルな定数 1 つを固定していた。
+   * 2c-xii が SwiftShader を実測して、**丸めモードがラスタライザごとに違う**ことが
+   * 分かったので、表（`RENDERER_BLEND_MODELS`）に置き換えた ── 定数は
+   * 「ANGLE Metal / M1 Max で測った」を書かずに、全機体について主張していた。
    */
-  it('実測が選んだモデルの ID が実在する', () => {
+  it('表の model が全部実在のモデル ID である', () => {
     const keys = BLEND_MODELS.map((m) => m.key) as BlendModelKey[];
-    expect(keys).toContain(OBSERVED_BLEND_MODEL);
-    expect(OBSERVED_BLEND_MODEL).toBe('f16-rtz');
+    for (const r of RENDERER_BLEND_MODELS) expect(keys).toContain(r.model);
+  });
+
+  it('実測した 2 機体を引ける（Metal は f16-rtz / SwiftShader は f16）', () => {
+    expect(blendModelForRenderer(
+      'ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)',
+    )).toBe('f16-rtz');
+    expect(blendModelForRenderer(
+      'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)),'
+      + ' SwiftShader driver)',
+    )).toBe('f16');
+  });
+
+  /**
+   * **版が変わっても引けること。** SPEC §7.9.3 が記録した SwiftShader は
+   * `SwiftShader Device (Subzero)`、2c-xii の実測は `(LLVM 10.0.0) (0x0000C0DE)` ──
+   * **同じドライバが別の文字列を名乗る。** 厳密一致の表は、丸めが変わっていないのに壊れる。
+   */
+  it('版名が変わっても SwiftShader を引ける（部分一致である）', () => {
+    expect(blendModelForRenderer(
+      'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)',
+    )).toBe('f16');
+  });
+
+  /**
+   * **知らない文字列に既定値を返さないこと自体が主張である。**
+   * `classifyBlend` が「いちばん近いモデル」を返さないのと同じ理由 ──
+   * 既定値を返すと、**測っていない機体で「当たった」と言える**ようになる。
+   */
+  it('表に無いラスタライザには null を返す（既定値を返さない）', () => {
+    expect(blendModelForRenderer('ANGLE (NVIDIA, NVIDIA GeForce RTX 4090 Direct3D11)')).toBeNull();
+    expect(blendModelForRenderer('Apple M3 Pro')).toBeNull();
+    expect(blendModelForRenderer('')).toBeNull();
+  });
+
+  /**
+   * **`match` が互いに包含関係を持たないこと。** 持つと、表を並べ替えただけで
+   * 同じ renderer が別のモデルを引く ── 順序が答えを決めるのは台帳ではない。
+   */
+  it('表の match は互いに包含関係を持たない', () => {
+    for (const a of RENDERER_BLEND_MODELS) {
+      for (const b of RENDERER_BLEND_MODELS) {
+        if (a === b) continue;
+        expect(a.match.includes(b.match)).toBe(false);
+      }
+    }
+  });
+
+  /** **出所の無い行を足させない。** `TIER_ANCHORS.observed` と同じ規律 */
+  it('表の全行が、どの機体で測ったかを書いている', () => {
+    for (const r of RENDERER_BLEND_MODELS) {
+      expect(r.observed.length).toBeGreaterThan(24);
+      expect(r.observed).toMatch(/Phase/);
+    }
+  });
+
+  /**
+   * **`match` を広げる後退を止める**（Phase 2c-xii・独立監査 C が実演した）。
+   *
+   * 監査 C は `match: 'Apple M1 Max'` を **`'Metal'`** や **`'ANGLE Metal Renderer'`** へ
+   * 広げる 1 語の変異を当て、**462 件すべてが緑のまま通る**ことを実演した
+   * （`teeth` の 2c-xii の 2 本も素通しした ── あれらは*狭める*方向にしか歯が無い）。
+   *
+   * 広げる方向が危ないのは、**1 台の M1 Max の実測が Apple の GPU 族全体へ拡張される**からで、
+   * それは測っていない機体について「当たった」と言うことである。
+   *
+   * → **測っていない機体が `null` になることを要求する。** M1 Max 以外の Apple GPU も、
+   * 別ベンダの Metal 実装も、この表には無い。上の 2 通りの変異はどちらもここで落ちる。
+   */
+  it('測っていない機体は null のまま（`match` を族へ広げると落ちる）', () => {
+    const notMeasured = [
+      // どれも `Metal` と `ANGLE Metal Renderer` を含むが、**M1 Max ではない**
+      'ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)',
+      'ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)',
+      'ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Max, Unspecified Version)',
+    ];
+    for (const r of notMeasured) expect(blendModelForRenderer(r)).toBeNull();
   });
 });
 

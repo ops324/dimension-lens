@@ -147,7 +147,7 @@ function classifyLine(line: string, following: string): SweepKind | null {
  * **折れ点の全列挙は `specimen.test.ts` の深度の行が別に持っている**ので、
  * 「どの軸も粗いまま」にはなっていない。
  */
-const EXPECTED_SWEEPS = { 量子化: 12, 切り詰め: 17, 点集合: 73, 完全列挙: 195 } as const;
+const EXPECTED_SWEEPS = { 量子化: 12, 切り詰め: 17, 点集合: 73, 完全列挙: 200 } as const;
 
 /**
  * **点集合の規模の台帳**（Phase 2c-viii）。
@@ -280,7 +280,17 @@ describe('掃引の国勢調査', () => {
     // （3 成分 `aX`/`aY`/`zHi` を舐める内側の `for`）である。
     // **軸としては既存と同じ** ── 新しい軸は 1 本も足していない。増えたのは
     // 「スロット境界 20 本」という既存の軸の上で、`max` と補間を分ける採点である。
-    expect(sample + EXPECTED_SWEEPS.完全列挙).toBe(297);
+    //
+    // **297 → 302**（2c-xii）。5 本とも `blendModel.test.ts` の
+    // `RENDERER_BLEND_MODELS`（renderer → 丸めモードの表）を舐める `for` である ──
+    // 表の全行に対して「model が実在するか」「出所が書かれているか」を要求する 2 本と、
+    // `match` の包含関係を見る二重ループ 2 本、そして**測っていない機体が `null` のまま**か
+    // を見る 1 本（独立監査 C が `match` を族へ広げる 1 語で 462 件を緑のまま通したので足した）。
+    // **これは新しい軸である** ── 2c-xi まで「ラスタライザ」は 1 本も掃いていなかった
+    // （この行のすぐ上が「新しい軸は 1 本も足していない」と書いているとおり）。
+    // 足したのは表の**行**に対する掃引であって、実機に対する掃引ではない ──
+    // 実機は 2 台しか測っていない（`--angle` で Metal と SwiftShader）。
+    expect(sample + EXPECTED_SWEEPS.完全列挙).toBe(302);
   });
 
   /**

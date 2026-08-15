@@ -112,6 +112,19 @@ export class BlendProbe {
   accumulate(renderer: THREE.WebGLRenderer, values: ArrayLike<number>): BlendProbeResult {
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
+    /**
+     * **クリア色も戻す**（Phase 2c-xii で足した）。`core/capture.ts` の 2 か所は
+     * 最初からこうしていたが、ここだけ `setClearColor` を戻さずに抜けていた ──
+     * 器具を 1 回動かすとレンダラのクリア alpha が 1 → 0 に落ちたままになる。
+     *
+     * いまの `CLEAR_COLOR` は不透明な黒なので RGB は変わらず、**絵は動いていない**。
+     * それでも直すのは、**器具を呼ぶ位置を動かせるようにするため**である ──
+     * 副作用が残っていると「G14 を先に測っても G15/G16 の数は動かない」が
+     * 構造から言えず、走らせて確かめるしかなくなる。
+     */
+    const prevClear = new THREE.Color();
+    renderer.getClearColor(prevClear);
+    const prevAlpha = renderer.getClearAlpha();
     const uValue = this.material.uniforms.uValue.value as THREE.Vector3;
 
     renderer.setRenderTarget(this.target);
@@ -129,6 +142,7 @@ export class BlendProbe {
 
     renderer.autoClear = prevAutoClear;
     renderer.setRenderTarget(prevTarget);
+    renderer.setClearColor(prevClear, prevAlpha);
 
     const gl = renderer.getContext();
     while (gl.getError() !== gl.NO_ERROR) {

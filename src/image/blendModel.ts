@@ -28,7 +28,7 @@
  * `blendF16TruncateToZero` に `blendCases()` の `values` を渡した値である
  * （`BLEND_MODELS` の並び順）。**実測列だけが GPU（`BlendProbe`）**で、node では出ない。
  *
- * | ケース | 実測 | f32 | fp16 RN | fp16+切り捨て | **fp16 RTZ** |
+ * | ケース | 実測（ANGLE Metal / M1 Max） | f32 | fp16 RN | fp16+切り捨て | **fp16 RTZ** |
  * |---|---|---|---|---|---|
  * | `selftest-exact` | 1.75 | 1.75 | 1.75 | 1.75 | 1.75 |
  * | `f16-vs-f32` | **1.0** | 1.0009766 | 1.0 | 1.0 | 1.0 |
@@ -216,13 +216,82 @@ export const BLEND_MODELS: readonly BlendModel[] = [
   },
 ];
 
+// --------------------------------------------------- どのラスタライザが、どのモデルか
+
 /**
- * Phase 2b の実測で 6/6 が厳密一致したモデル。**ラダーがこの ID を採点する。**
+ * **丸めモードはラスタライザごとに違う**（Phase 2c-xii で実測）。
  *
- * ここを別の ID に書き換えると `blendModel.test.ts` が落ちる ── そうしておかないと、
- * 「どのモデルが当たったか」がコメントの中だけの主張になる。
+ * 2b は `OBSERVED_BLEND_MODEL = 'f16-rtz'` という**グローバルな定数 1 つ**を持っていて、
+ * ラダーはそれを採点していた。しかしその実測は **ANGLE Metal / Apple M1 Max でだけ**の
+ * 話であり、SPEC §7.9.3 も「SwiftShader や他の GPU が同じとは言っていない」と書いていた。
+ * **定数は、書いていない範囲まで主張していた。**
+ *
+ * 2c-xii が 2 つのラスタライザで実測した結果（`blendCases()` の 6 ケース・許容 `1e-6`）:
+ *
+ * | ケース | ANGLE Metal / M1 Max | SwiftShader |
+ * |---|---|---|
+ * | `selftest-exact` | 1.75 | 1.75 |
+ * | `f16-vs-f32` | 1 | 1 |
+ * | `subnormal-tail` | 0.021759033203125 | 0.03118896484375 |
+ * | `uniform-378` | 0.24462890625 | 0.274169921875 |
+ * | `binary-bright-first` | 0.29296875 | 0.29638671875 |
+ * | `binary-dark-first` | 0.298828125 | 0.30224609375 |
+ *
+ * **積集合はどちらも 1 つに絞れた** ── Metal は `f16-rtz`、SwiftShader は `f16`。
+ * つまり「通過するモデルがちょうど 1 つ」はラスタライザに依らないが、
+ * **それがどれかは依る。** この表はその区別を持つためにある。
+ *
+ * ## 部分一致で引く（**厳密一致にしてはいけない**）
+ *
+ * 同じ SwiftShader が、SPEC §7.9.3 では `SwiftShader Device (Subzero)`、
+ * 2c-xii の実測では `SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)` を名乗った。
+ * **文字列は Chrome の版で動く。** 厳密一致の表は、丸めが変わっていないのに壊れる。
+ *
+ * ## 知らない文字列に既定値を返さない
+ *
+ * `classifyBlend` が「いちばん近いモデル」を返さないのと同じ理由である ──
+ * 既定値を返すと、**測っていない機体で「当たった」と言える**ようになる。
  */
-export const OBSERVED_BLEND_MODEL: BlendModelKey = 'f16-rtz';
+export interface RendererBlendModel {
+  /** `glInfo().renderer`（UNMASKED）に**含まれていれば**一致とする部分文字列 */
+  readonly match: string;
+  readonly model: BlendModelKey;
+  /** **どの機体で実測したか。** ここを空にした行を足してはいけない */
+  readonly observed: string;
+}
+
+export const RENDERER_BLEND_MODELS: readonly RendererBlendModel[] = [
+  {
+    match: 'Apple M1 Max',
+    model: 'f16-rtz',
+    observed: 'Phase 2b / ANGLE Metal・macOS・システム Chrome。6 ケース 6/6 が厳密一致',
+  },
+  {
+    /**
+     * `SwiftShader` だけで引く。版名（`Subzero` / `LLVM 10.0.0`）は入れない ──
+     * 入れると版が上がるたびに `null` へ落ち、**丸めが変わっていないのに ➖ になる**。
+     * 実測したのは下記の 1 ビルドだけなので、**別ビルドで丸めが変われば
+     * 依存側の行が落ちる**（それが正しい振る舞いである。黙って通さない）。
+     */
+    match: 'SwiftShader',
+    model: 'f16',
+    observed: 'Phase 2c-xii / `--use-angle=swiftshader`・Vulkan 1.3.0 (SwiftShader Device'
+      + ' (LLVM 10.0.0) (0x0000C0DE))。6 ケース 6/6 が厳密一致',
+  },
+];
+
+/**
+ * `renderer` 文字列から加算合成のモデルを引く。**表に無ければ `null`。**
+ *
+ * 最初に一致した行を返す ── 表は上から順に読む。`match` が互いに包含関係を持たないことは
+ * `blendModel.test.ts` が見張る（持つと、並べ替えただけで答えが変わる）。
+ */
+export function blendModelForRenderer(renderer: string): BlendModelKey | null {
+  for (const r of RENDERER_BLEND_MODELS) {
+    if (renderer.includes(r.match)) return r.model;
+  }
+  return null;
+}
 
 // ------------------------------------------------------------- 規定した値の並び
 

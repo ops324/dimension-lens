@@ -60,12 +60,26 @@
  * 「アンカーは CPU で決まるからラスタライザに依らない」は真だが、
  * **機体に依らないとは言っていなかった**。→ ティアが違う行は `➖`（採点しない）。
  *
+ * ## 測る枠を選べるようにした（Phase 2c-xii）
+ *
+ * §7.9.3 の SwiftShader 強制も、G10 の BALANCED 実測に使った 4 コア偽装も、
+ * **どちらも 1 度手でやって捨てられていた** ── 次のフェーズが再現できない。
+ * SPEC が「書き捨てた道具は次のフェーズで再現できない」と名指ししている型そのものなので、
+ * **リポジトリの中に置く**:
+ *
+ *   `--angle=swiftshader` … CI の runner と同じソフトウェアラスタライザで回す
+ *   `--cores=4`           … `bootTier()` の入力を偽装して BALANCED を手元で作る
+ *
+ * **どちらも既定では何も変えない。** 付けたときだけヘッダに出て、
+ * 「この数値はどの枠で測ったか」が出力の中に残る。
+ *
  * 使い方:
  *   npm run ladder                   フル（実 GPU・予算判定あり）
  *   npm run ladder -- --teeth        **ラダー自身の歯**（故障を注入して赤くなるか）
  *   npm run ladder -- --structural   構造回帰のみ（CI に載っている）
  *   npm run ladder -- --teeth --budgets  **予算そのものに歯が在るかを数える**（Phase 2c-vi）
  *   npm run ladder -- --json         JSON も出す
+ *   npm run ladder -- --angle=swiftshader --cores=4   **CI の枠を手元で作る**（Phase 2c-xii）
  */
 
 import { spawn } from 'node:child_process';
@@ -222,7 +236,44 @@ const FAULTS = [
     name: '重ね合わせを 0.3% だけ壊す（予算 0.2% を 0.5% へ戻すと素通りする）',
     expect: ['G12'],
   },
+  // ---- Phase 2c-xii ----
+  //
+  // **CI へ載せる行に歯を作る。** G14 を `--structural` へ載せると決めたので、
+  // 「その行は何かを見張っているか」を先に確かめた ── `blendorder` は
+  // `f16-vs-f32` と積集合の行を落とすが、**3 チャンネルの行は 1 つも落とさなかった**。
+  // 名前が正しくて歯が無い行は 2c-xi で踏んだ形なので、故障のほうを足す。
+  // `rgb[0]` を触らないので、**この行だけを単独で落とす**。
+  {
+    key: 'blendchan',
+    name: 'チャンネルごとに違う丸めをする実装の模擬（G の 1 ulp だけずらす）',
+    expect: ['G14'],
+  },
+  /**
+   * **`wrongtier` と同じ型の `x/x` を、renderer の表にも塞ぐ。**
+   *
+   * 2c-iii がティア別の表を置いたとき、「**表を選ぶ主体が採点対象の外へ出る**」という
+   * `x/x` が生まれた ── `bootTier()` が壊れても、ラダーはその表を選んで緑のままになる。
+   * renderer → 丸めモードの表は**同じ形**である。`glInfo().renderer` が別の文字列を
+   * 返すようになれば、依存側 5 行と ENV の 1 行が黙って `➖` へ落ちる。
+   *
+   * この故障は表に無い renderer を名乗る。**`EXPECTED_G14_SCORED.full` が 9 なので、
+   * ➖ へ落ちた瞬間に赤くなる** ── それを実際に確かめるのがこの 1 本である。
+   */
+  {
+    key: 'wrongrenderer',
+    name: '表に無いラスタライザを名乗る（測っていない機体で緑にならないか）',
+    expect: ['G14'],
+  },
 ];
+
+/**
+ * **故障の本数のラチェット**（Phase 2c-xii）。減ったら赤。
+ *
+ * `teeth.mjs` の `EXPECTED_MUTATIONS` に当たるものが、ラダーには 1 つも無かった ──
+ * `SPEC.md` が「台帳なので、まだ増やせる」と書いたまま、**減らしても誰も気づかない**状態だった。
+ * 増やすときはここも上げること（差分に出る）。
+ */
+const EXPECTED_FAULTS = 16;
 
 const args = process.argv.slice(2);
 const STRUCTURAL = args.includes('--structural');
@@ -230,6 +281,25 @@ const AS_JSON = args.includes('--json');
 const TEETH = args.includes('--teeth');
 /** 予算そのものに歯が在るかを数える（`--teeth` と併用する） */
 const BUDGETS = args.includes('--budgets');
+
+/**
+ * **測る枠**（Phase 2c-xii）。既定は「素のまま」で、いまの挙動を 1 ビットも変えない。
+ *
+ * `FORCED_ANGLE` は Chrome の `--use-angle` へそのまま渡す（`swiftshader` で CI と同じになる）。
+ * `FORCED_CORES` は `navigator.hardwareConcurrency` を偽装して BALANCED を作る ──
+ * **偽装した値は `bootTier()` にもラダーの `expectTier` にも同じように見える**ので、
+ * ティア判定の行は自己整合したまま通る。それでよい: この偽装が答えているのは
+ * 「4 コアの機体では格子と予算がどうなるか」であって、`bootTier()` の正しさではない。
+ * **だから枠はヘッダに必ず出す** ── 出力を見た人が「素の機体の数値だ」と読めないように。
+ */
+const FORCED_ANGLE = (args.find((a) => a.startsWith('--angle=')) ?? '').split('=')[1] || null;
+const FORCED_CORES = Number((args.find((a) => a.startsWith('--cores=')) ?? '').split('=')[1]) || null;
+
+/** ヘッダの 1 行。素のままなら「素」と出す（空欄にすると読み落とされる） */
+const FRAME_LABEL = FORCED_ANGLE || FORCED_CORES
+  ? `**偽装あり** ── ${FORCED_ANGLE ? `--use-angle=${FORCED_ANGLE}` : 'ラスタライザは素'}`
+    + ` / ${FORCED_CORES ? `コア数を ${FORCED_CORES} に偽装` : 'コア数は素'}`
+  : '素（この機体そのまま）';
 
 let rows = [];
 let failures = 0;
@@ -294,11 +364,25 @@ async function main() {
   try {
     // **システムの Chrome を使う。** 同梱 Chromium は SwiftShader に落ちることがあり、
     // そのとき数値は変わるのに、どの痕跡も「ok」のままである。
-    browser = await chromium.launch({ channel: 'chrome', headless: true });
+    // `--angle=…` を渡したときだけ、そのラスタライザを**明示的に**選ぶ（Phase 2c-xii）。
+    browser = await chromium.launch({
+      channel: 'chrome',
+      headless: true,
+      args: FORCED_ANGLE ? [`--use-angle=${FORCED_ANGLE}`] : [],
+    });
     const context = await browser.newContext({
       deviceScaleFactor: 2,
       viewport: { width: 640, height: 520 },
     });
+    // `bootTier()` の入力を偽装する（Phase 2c-xii）。**ページが立つ前に入れる**ので、
+    // 起動時にティアを決める経路もこの値を読む。
+    if (FORCED_CORES) {
+      await context.addInitScript((n) => {
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+          get: () => n, configurable: true,
+        });
+      }, FORCED_CORES);
+    }
     const page = await context.newPage();
 
     const consoleErrors = [];
@@ -417,11 +501,35 @@ async function runOnce(page, context, fault, consoleErrors) {
   record('G7', 'sampleWeight (d=2)', '厳密に 1（全ティア）', String(anchors.sampleWeight),
     Object.is(anchors.sampleWeight, 1), 'Object.is');
 
+  /**
+   * **G14 は構造モードでも測る**（Phase 2c-xii）。器具は作品のシーンを通さないので
+   * ここだけ独立に取れる ── 実測で **定常 Metal 26.3 ms / SwiftShader 45.2 ms**
+   *（冷えた初回は 18.0 / 425.6 ms。冷側の差は描画の flush で、K には依らない）。
+   * ラスタライザ非依存の行だけを CI が採点し、依存側は `➖` になる（`scoreG14`）。
+   */
+  const blend = await page.evaluate(measureBlendInPage, fault);
+  /**
+   * **ラスタライザが表に在るか**を行にする（Phase 2c-xii）。
+   * 2a から `UNMASKED_RENDERER` はヘッダに出ていたが、**`record()` される行は 0 本**だった ──
+   * つまり「すべての数値にラスタライザの素性が付く」は、付いていたのがヘッダだけで、
+   * **ラスタライザが変わったこと自体を検出する採点行は無かった**。
+   * ティアの行（上）と同じ書き方で、「表に無い」は `➖` にする。
+   */
+  record('ENV', 'ラスタライザ（加算合成の丸めモードの表）',
+    blend.expected ?? '(表に無い)', blend.renderer, blend.expected ? true : null,
+    blend.expected
+      ? 'G14 の依存側はこの期待値で採点する'
+      : '**表に無いラスタライザ** —— `--angle=…` で 6 ケースを先に測り、'
+        + '`RENDERER_BLEND_MODELS` へ実測つきで足すこと');
+
   if (!STRUCTURAL) {
     const raw = await page.evaluate(measureInPage, fault);
     score(raw, fault);
-    ladderRaw = raw;
+    scoreG14({ ...blend, ...raw }, { dependent: true });
+    ladderRaw = { ...raw, ...blend };
     if (!fault.quick) await measureZeroPhase(context);
+  } else {
+    scoreG14(blend, { dependent: false });
   }
 
   if (consoleErrors) {
@@ -447,18 +555,26 @@ async function runTeeth(page, context, gl) {
   console.log('');
   console.log('  ラダーの歯の確認');
   console.log(`  ラスタライザ : ${gl.renderer}`);
+  console.log(`  測る枠       : ${FRAME_LABEL}`);
   console.log('');
 
   rows = []; failures = 0;
   // `--budgets` のときだけ素の状態を**非 quick** で回す ── 分母（全 `site`）を正直に数えるため。
-  // 故障側を非 quick で回すのは費用が見合わない（G16 の掃引だけで故障あたり 60 秒級）ので、
-  // 生成されない行は「検査外」として**明示して数に入れる**（分母を縮めて点を良く見せない）。
+  // 故障側を非 quick で回すのは費用が見合わないので、生成されない行は「検査外」として
+  // **明示して数に入れる**（分母を縮めて点を良く見せない）。
+  //
+  // **2c-xii の訂正**: ここには「G16 の掃引だけで故障あたり 60 秒級」と書いてあったが、
+  // **60 は模擬秒**（`gatedSeconds` ＝ 6 チャンク × 300 フレーム / 60 × 2 本）であって
+  // 実時間ではなかった。実測は **Metal 10.1 秒 / SwiftShader 278.0 秒**（独立監査 B・
+  // こちらの 2×2 とも整合）。しかも **G16 の掃引には `fault.quick` の門が 1 つも無い**ので、
+  // 「故障側を quick にすれば掃引を避けられる」は**そもそも成り立っていない** ──
+  // `nosweep` 以外の全走行が満額を払っている。ここは開いたまま残す（§8 に書いた）。
   await runOnce(page, BUDGETS ? context : null, BUDGETS ? {} : { quick: true }, null);
   const baseRows = rows.map((r) => ({ id: r.id, ok: r.ok, gauge: r.gauge }));
   const baseOk = failures === 0;
   console.log(`  素の状態: ${baseOk ? '緑 ✅' : `赤 ❌（${failures} 行）`}`);
   if (!baseOk) {
-    for (const r of rows.filter((x) => !x.ok)) console.log(`    ❌ ${r.id} ${r.what} → ${r.measured}`);
+    for (const r of rows.filter((x) => x.ok === false)) console.log(`    ❌ ${r.id} ${r.what} → ${r.measured}`);
     console.log('\n  素の状態が緑でないので、故障注入の結果は解釈できない。');
     return 1;
   }
@@ -470,7 +586,19 @@ async function runTeeth(page, context, gl) {
   for (const f of FAULTS) {
     rows = []; failures = 0;
     await runOnce(page, null, { [f.key]: true, quick: true }, null);
-    const failedIds = new Set(rows.filter((r) => !r.ok).map((r) => r.id));
+    /**
+     * **`ok === false` だけを「落ちた」と数える**（Phase 2c-xii で直した）。
+     *
+     * 以前は `!r.ok` だった ── `ok === null`（➖・採点しない）は falsy なので
+     * **飛ばした行が「落ちた」に化けていた**。いままで teeth の走行で `null` の行が
+     * 出なかったので無害だったが、2c-xii は G14 の依存側を `➖` にするので、
+     * 直さないと**噛んでいない故障が「噛んだ」と数えられる**。
+     * `reportBudgets` は最初から `r.ok === false`（下記）で、そちらが正しかった。
+     *
+     * §7.9 の冒頭が書いている「見張る道具の中で同じ失敗モードが再演される」型なので、
+     * **`➖` を足す前に直す。**
+     */
+    const failedIds = new Set(rows.filter((r) => r.ok === false).map((r) => r.id));
     const hit = f.expect.filter((id) => failedIds.has(id));
     const ok = hit.length > 0;
     if (ok) bitten++;
@@ -494,11 +622,19 @@ async function runTeeth(page, context, gl) {
     console.log('  抜けた歯がある。**ラダーがその故障を見ていない** ──');
     console.log('  G9 を 2 フェーズ腐らせたのと同じ形が、見張る道具の中に在る。');
   }
+  // **本数のラチェット**（Phase 2c-xii）。故障を消して「全部噛んだ」にする道を塞ぐ。
+  const enoughFaults = FAULTS.length >= EXPECTED_FAULTS;
+  if (!enoughFaults) {
+    console.log('');
+    console.log(`  ❌ 故障が ${FAULTS.length} 本しかない（${EXPECTED_FAULTS} 本あったはず）。`);
+    console.log('  故障を消せば「噛んだ／合計」は必ず良くなる ── **分母を縮めて点を上げる**形である。');
+    console.log('  正当に減らしたのなら、この PR の中で EXPECTED_FAULTS も下げること。');
+  }
   let budgetsOk = true;
   if (BUDGETS) budgetsOk = reportBudgets(baseRows, faultRuns);
 
   if (AS_JSON) console.log('\nJSON\n' + JSON.stringify({ gl, log }, null, 2));
-  return bitten === FAULTS.length && budgetsOk ? 0 : 1;
+  return bitten === FAULTS.length && budgetsOk && enoughFaults ? 0 : 1;
 }
 
 /**
@@ -628,8 +764,6 @@ async function measureInPage(fault) {
   const { srgbToLinear, linearToCode } = await import('/src/color/srgb.ts');
   const { spritePhaseFactor, centreFragmentOffset } = await import('/src/image/spriteGain.ts');
   const { makeSpecimen0, REGIONS, RAMP_CODES } = await import('/src/image/fixture.ts');
-  const { blendCases, classifyBlend, OBSERVED_BLEND_MODEL, BLEND_MODELS } =
-    await import('/src/image/blendModel.ts');
   const { compressStrengthFor } = await import('/src/core/compress.ts');
   const P = primariesFor('srgb');
   const dE = (a, b) => deltaE2000Linear(P, a, b);
@@ -1125,29 +1259,9 @@ async function measureInPage(fault) {
     out.G13 = { on, off };
   }
 
-  // ---------- G14: 加算合成の機構（**作品を通さない器具**）
-  //
-  // §4.6 訂正 4 の宿題。監査の fp16 逐次丸めシミュレーション（1% 未満）と
-  // 実測（−5.2% / −6.0%）が矛盾したままだったので、規定した値を GPU の
-  // ブレンドユニットへ直接積んで、どのモデルと一致するかを投票させる。
-  {
-    out.G14 = [];
-    for (const c of blendCases()) {
-      const values = fault.blendorder
-        ? Array.from(c.values).reverse()   // 順序依存を握り潰す故障
-        : Array.from(c.values);
-      const m = L.blendProbe(values);
-      // **判定は宣言された並びに対して行う** ── 故障で並べ替えても採点者は動かさない
-      const v = classifyBlend(c.key, c.values, m.rgb[0]);
-      out.G14.push({
-        key: c.key, count: m.count, glError: m.glError,
-        rgb: m.rgb, channelsEqual: m.rgb[0] === m.rgb[1] && m.rgb[1] === m.rgb[2],
-        predicted: v.predicted, matches: v.matches,
-      });
-    }
-    out.observedModel = OBSERVED_BLEND_MODEL;
-    out.modelKeys = BLEND_MODELS.map((m) => m.key);
-  }
+  // ---------- G14 は `measureBlendInPage` へ出した（Phase 2c-xii）。
+  // 器具は作品のシーンを 1 ミリも通さないので、**ここだけ独立に取れる** ──
+  // そのおかげで `--structural`（＝ CI）でも G14 だけを測れる。
 
   // ---------- G15: `CompressPass` の配線（**2a まで誰も呼んでいなかった**）
   //
@@ -1263,6 +1377,178 @@ async function measureInPage(fault) {
   }
 
   return out;
+}
+
+/**
+ * **G14 だけを測るページ内関数**（Phase 2c-xii で `measureInPage` から出した）。
+ *
+ * 出した理由は 1 つ。`measureInPage` は G0〜G16 を全部測るので、構造モードで呼ぶと
+ * **G16 の位相掃引だけで 60 秒**を CI が毎コミット払う。G14 の器具（`render/blendProbe.ts`）は
+ * 作品のシーンを 1 ミリも通さないので、**ここだけ独立に取れる** ── 実測でも
+ * 6 ケースの収集は**定常で Metal 26.3 ms / SwiftShader 45.2 ms**（冷えた初回は 18.0 / 425.6 ms）で、
+ * G16 の掃引（Metal 10.1 秒 / SwiftShader 278 秒）とは 2〜4 桁違う。
+ * **条件を併記する**: 2c-xii は最初この行に「Metal 29 ms / SwiftShader 716 ms」と書いたが、
+ * 前者は温まった値・後者は負荷時の冷えた初回で、**揃っていない 2 つを並べていた**。
+ *
+ * `renderer` と `expected` を**同じ evaluate の中で**取る。ラダーは node の素の `.mjs` で
+ * `src/*.ts` を import できないので、表を引けるのはページの中だけである。
+ */
+async function measureBlendInPage(fault) {
+  const L = window.__LENS__;
+  const { blendCases, classifyBlend, BLEND_MODELS, blendModelForRenderer } =
+    await import('/src/image/blendModel.ts');
+  // 故障 `wrongrenderer`: 表に無いラスタライザを名乗る（`wrongtier` と同じ型の `x/x` を試す）
+  const renderer = fault.wrongrenderer
+    ? 'ANGLE (Nobody, Imaginary Renderer: never measured, Unspecified Version)'
+    : L.glInfo().renderer;
+  const out = { G14: [], renderer, expected: blendModelForRenderer(renderer) };
+  for (const c of blendCases()) {
+    const values = fault.blendorder
+      ? Array.from(c.values).reverse()   // 順序依存を握り潰す故障
+      : Array.from(c.values);
+    const m0 = L.blendProbe(values);
+    /**
+     * 故障 `blendchan`（Phase 2c-xii）: **チャンネルごとに違う丸めをする実装**の模擬。
+     * 採点者が「チャンネルごとに違う丸めをする実装なら、ここが先に落ちる」と書いている
+     * 当の状態を実際に作る。`rgb[0]` は触らないので、**3ch の行だけを単独で落とす** ──
+     * 単独で落ちることが、その行に歯が在ることの条件である（`reportBudgets` の `alone` と同じ）。
+     */
+    const m = fault.blendchan
+      ? { ...m0, rgb: [m0.rgb[0], m0.rgb[1] * (1 - 2 ** -10), m0.rgb[2]] }
+      : m0;
+    // **判定は宣言された並びに対して行う** ── 故障で並べ替えても採点者は動かさない
+    const v = classifyBlend(c.key, c.values, m.rgb[0]);
+    out.G14.push({
+      key: c.key, count: m.count, glError: m.glError,
+      rgb: m.rgb, channelsEqual: m.rgb[0] === m.rgb[1] && m.rgb[1] === m.rgb[2],
+      predicted: v.predicted, matches: v.matches,
+    });
+  }
+  out.modelKeys = BLEND_MODELS.map((m) => m.key);
+  return out;
+}
+
+/**
+ * **G14 が実際に採点した行数。** 減ったら赤。**モードごとに別の数**を持つ。
+ *
+ * 2c-viii の `EXPECTED_BUDGET_SITES` と同じ理由で置く ── 依存側を `➖` にする設計は、
+ * **`glInfo().renderer` を変えるだけで採点を消せる**。`report()` は `➖` を通過に数えないが、
+ * `process.exit` は `failures` しか見ないので、**行が全部 ➖ になっても緑**である。
+ * 「指標が証拠を消すほど良くなるのは、指標の側の欠陥である」（2c-viii）。
+ *
+ * **フル側を 9 にしてあるのが要点である。** 3 だけを置くと、
+ * *表に無いラスタライザで `npm run ladder` を回しても緑*になる ── 依存側 5 行と
+ * ENV の 1 行が ➖ へ落ちても、非依存の 3 行 ＋「4 モデルのどれか」の 1 行が残るからである。
+ * それは「測っていない機体で通った」を許すことで、この作品がいちばん避ける形になる。
+ * → **知らない機体では、ローカルのラダーは赤い。** 直し方は 1 つで、
+ * `--angle=…` で 6 ケースを測って `RENDERER_BLEND_MODELS` へ実測つきで足すこと。
+ */
+const EXPECTED_G14_SCORED = { structural: 3, full: 9 };
+
+/**
+ * **G14 が出す行の総数**（採点した行 ＋ `➖` の行）。減ったら赤。
+ *
+ * **`EXPECTED_G14_SCORED.structural = 3` だけでは機構にならない**（独立監査 C が実演し、
+ * こちらでも検算した）── `scoreG14` は構造モードで `record()` を必ず 3 回呼ぶので、
+ * **`scored < 3` は恒偽**である。3 走行（表に在る Metal / 表に在る SwiftShader /
+ * 表に無い renderer）で 1 度も発火しなかった。
+ *
+ * **2c-xi が「恒真な歯」を見つけたその教訓を引用しながら、同じ形を自分で作っていた。**
+ * `full: 9` のほうは実際に発火する（表に無い renderer で 9 → 4 に落ちる）ので、
+ * **同じ定数の 2 つの値のうち片方だけが機構だった**。
+ *
+ * → 総数も見る。依存側の行を消せば、**どちらのモードでも** 9 → 8 で発火する。
+ */
+const EXPECTED_G14_ROWS = 9;
+
+/**
+ * G14 の採点。**構造モードとフルで同じ関数を通す**（採点者を二重化しない）。
+ *
+ * ## 何がラスタライザに依らないのか —— 2c-xii が測り直して 2 件訂正した
+ *
+ * 実測（`--angle=swiftshader` で 2 通り）: **Metal は `f16-rtz`、SwiftShader は `f16`。**
+ * 6 ケースのうち 4 ケースで値が違う（`src/image/blendModel.ts` の表 3）。
+ * つまり「どのモデルか」は依存側である。ここまでは計画どおりだった。
+ *
+ * **計画が間違っていた 2 件**（実装前の独立監査 A が反証し、こちらでも検算した）:
+ *
+ *   1. **「通過したモデルがちょうど 1 つ」は恒真だった。** 4 モデルはどの 2 つを取っても
+ *      少なくとも 1 ケースで相対 **3.5e−2 以上**離れており、許容 `1e-6` の **35,000 倍**である。
+ *      だから 2 つ以上残ることは**ありえない** ── `length === 1` は `length !== 0` と同値で、
+ *      実測が 4 モデルのどれかに厳密一致するかぎり必ず 1 になる。
+ *      旧コードの「2 つ以上残るなら `x/x`」は**発火しえない枝**だった。
+ *      → 主張を実態に書き直す: **「この機体は宣言した 4 モデルのどれかである」**。
+ *      これはモデル表の被覆の検査であって、機構が同定できたことの検査ではない。
+ *      （f32 タイル → 解決時に 1 度だけ f16 へ丸めるラスタライザでは 0 になる。検算済み）
+ *   2. **`f16-vs-f32` が厳密 1.0 は「非依存」ではない。** 16 通りの仮説ラスタライザで
+ *      9 通りしか通らない ── これは「アキュムレータが fp16 幅で、丸め戻り、
+ *      **積む順序が保存されている**」という実質的な主張である。CI に載せてよいが、
+ *      **非依存と名付けてはいけない。**
+ *
+ * `selftest-exact` の厳密 1.75 はここに置かない。**ENV の「加算合成の器具の自己検査」
+ * （`traces.lensBlend`）が構造モードで既に同じ主張を持っている** ── 置くと権威が 2 つになる。
+ */
+function scoreG14(r, { dependent }) {
+  /** 依存側。構造モードでは `ok = null`（➖）にして、**行は残す**（消すと数が減ったことが読めない） */
+  const dep = (what, budget, measured, ok, note) =>
+    record('G14', what, budget, measured, dependent ? ok : null,
+      dependent ? note
+        : `${note} / **構造モードでは採点しない** ── 丸めモードは実装定義で、`
+          + `この機体の期待値は ${r.expected ?? '**表に無いラスタライザ**'}`);
+
+  // ---- ラスタライザに依らない行（CI へ載せる）
+  const noErr = r.G14.every((g) => g.glError === 0);
+  record('G14', '器具: 全 6 ケースで GL エラー 0', '0',
+    String(r.G14.map((g) => g.glError).reduce((a, b) => a || b, 0)), noErr,
+    '**現行の故障はどれもこの行を落とさない** ── 器具の健全性の行であって、作品の主張ではない');
+  const chan = r.G14.every((g) => g.channelsEqual);
+  record('G14', '器具: 3 チャンネルが同じ値を返す（全 6 ケース）', 'true', String(chan), chan,
+    'チャンネルごとに違う丸めをする実装なら、ここが先に落ちる（故障 `blendchan` が試す）');
+  const vsF32 = r.G14.find((g) => g.key === 'f16-vs-f32');
+  record('G14', 'アキュムレータが fp16 幅で、丸め戻り、**積む順序が保存されている**',
+    '厳密に 1（`Object.is`）', String(vsF32?.rgb[0]), Object.is(vsF32?.rgb[0], 1),
+    '**非依存ではない** ── 16 通りの仮説ラスタライザのうち 9 通りしか通らない。'
+    + ' f32 で積むもの・タイル解決型・順序を入れ替えるものはここで落ちる');
+
+  // ---- ラスタライザに依る行（ローカルの実 GPU でだけ採点する）
+  let survivors = r.modelKeys.slice();
+  for (const g of r.G14) survivors = survivors.filter((k) => g.matches.includes(k));
+  dep('**この機体は宣言した 4 モデルのどれかである**', '積集合が 1 つ',
+    survivors.length ? survivors.join('+') : '（無し）', survivors.length === 1,
+    '0 なら 4 つとも外している（未知のラスタライザ）。**2 以上はありえない** ──'
+    + ' モデル対の最小分離が許容の 35,000 倍なので、この行は `length !== 0` と同値である');
+  dep(`**その 1 つが ${r.expected ?? '（表に無い）'}**`, `${r.expected ?? '(表に無い)'} ただ 1 つ`,
+    survivors.length ? survivors.join('+') : '（無し）',
+    r.expected ? survivors.length === 1 && survivors[0] === r.expected : null,
+    `renderer: ${r.renderer}`);
+  for (const g of r.G14) {
+    if (g.key === 'selftest-exact' || g.key === 'f16-vs-f32') continue;   // モデルを判別しない
+    dep(`加算合成 ${g.key}（K=${g.count}）`,
+      `${r.expected ?? '(表に無い)'} が候補に残る`,
+      g.matches.length ? g.matches.join('+') : '**どのモデルとも一致しない**',
+      r.expected ? g.matches.includes(r.expected) : null,
+      `実測 ${g.rgb[0].toPrecision(9)}`
+      + ` / ${r.modelKeys.map((k) => `${k} ${g.predicted[k].toPrecision(6)}`).join(' / ')}`);
+  }
+
+  // **採点した行が減っていないこと。** ➖ だらけで緑になる道を塞ぐ（上記のラチェット）
+  const want = dependent ? EXPECTED_G14_SCORED.full : EXPECTED_G14_SCORED.structural;
+  const g14 = rows.filter((x) => x.id === 'G14');
+  const scored = g14.filter((x) => x.ok !== null).length;
+  if (scored < want) {
+    record('G14', '**採点した G14 の行数**', `≥ ${want}`, String(scored), false,
+      r.expected
+        ? '行が ➖ へ落ちて採点が消えた。`➖` は通過に数えないが、**exit は failures しか見ない** ──'
+          + ' 減らすならこの数も同じ PR で下げること'
+        : `**${r.renderer} が表に無い。** 測っていない機体で緑にはしない ──`
+          + ' `--angle=…` で 6 ケースを測って `RENDERER_BLEND_MODELS` へ実測つきで足すこと');
+  }
+  // **総数も見る。** 上の行だけだと構造モードでは恒偽になる（`EXPECTED_G14_ROWS` の doc）
+  if (g14.length < EXPECTED_G14_ROWS) {
+    record('G14', '**G14 が出した行の総数**', `≥ ${EXPECTED_G14_ROWS}`, String(g14.length), false,
+      '行そのものが消えた。`➖` へ落とすのではなく**出さなく**すれば、採点数のラチェットは'
+      + ' 素通りする ── 減らすならこの数も同じ PR で下げること');
+  }
 }
 
 /** 生の測定から行を作る。**採点はここに集約する**（`enabledPasses()` のような自己参照を作らない） */
@@ -1442,37 +1728,6 @@ function score(r, fault) {
       String(!r.G13.off.identical), !r.G13.off.identical && r.G13.off.applied === false,
       '両側を見ないと「常に止まっている実装」でも緑になる');
   }
-  if (r.G14) {
-    /**
-     * **採点は「投票」である。** 1 ケースで 1 つに絞れることは要求しない ──
-     * `selftest-exact` は 4 モデルとも 1.75 だし、`f16-vs-f32` は 3 モデルが一致する。
-     * **設計上そうなっている**（どのケースがどの組を分けるかは `blendCases()` に書いてある）。
-     *
-     * 各ケースに要求するのは「**観測されたモデルが候補に残っていること**」だけで、
-     * 「1 つに絞れたか」は**全ケースの積集合**に対して 1 行だけ問う。
-     * 初版はケースごとに `matches.length === 1` を要求して 2 行落とした ──
-     * 器具ではなく**採点者が間違っていた**。
-     */
-    for (const g of r.G14) {
-      const ok = g.glError === 0 && g.channelsEqual && g.matches.includes(r.observedModel);
-      record('G14', `加算合成 ${g.key}（K=${g.count}）`,
-        `${r.observedModel} が候補に残る`,
-        g.matches.length ? g.matches.join('+') : '**どのモデルとも一致しない**', ok,
-        `実測 ${g.rgb[0].toPrecision(9)}`
-        + ` / ${r.modelKeys.map((k) => `${k} ${g.predicted[k].toPrecision(6)}`).join(' / ')}`);
-    }
-    // **全ケースを通過したモデルはただ 1 つ**でなければならない（＝ 機構が同定できた）
-    let survivors = r.modelKeys.slice();
-    for (const g of r.G14) survivors = survivors.filter((k) => g.matches.includes(k));
-    record('G14', '**全 6 ケースを通過したモデル**', `${r.observedModel} ただ 1 つ`,
-      survivors.length ? survivors.join('+') : '（無し）',
-      survivors.length === 1 && survivors[0] === r.observedModel,
-      '2 つ以上残るなら入力が機構を分けていない（`x/x`）。0 なら 4 つとも外している');
-    // 器具そのものの健全性（3 チャンネルが独立に同じ答えを出すこと）
-    const chan = r.G14.every((g) => g.channelsEqual);
-    record('G14', '3 チャンネルが同じ値を返す', 'true', String(chan), chan,
-      'チャンネルごとに違う丸めをする実装なら、ここが先に落ちる');
-  }
   if (r.G15) {
     record('G15', 'アンカーでは配線が絵を動かさない', `0 / ${r.G15.totalBytes} バイト相違`,
       `${r.G15.anchorDiffBytes} バイト`, r.G15.anchorDiffBytes === 0,
@@ -1612,6 +1867,7 @@ function report(gl, buffer) {
   console.log(`  GL           : ${gl.version} / maxSamples ${gl.maxSamples}`);
   console.log(`  drawingBuffer: ${buffer.width}×${buffer.height}`);
   console.log(`  モード       : ${STRUCTURAL ? '構造回帰のみ（ΔE00 の権威にしない）' : 'フル'}`);
+  console.log(`  測る枠       : ${FRAME_LABEL}`);
   console.log('');
   console.log(line('  ', '項目', '予算', '実測', '  '));
   console.log('  ' + '-'.repeat(118));

@@ -578,13 +578,15 @@ const LEDGER: readonly LedgerEntry[] = [
   {
     file: 'src/image/blendModel.ts',
     table: 2,
-    head: 'ケース | 実測 | f32 | fp16 RN | fp16+切り捨て | **fp16 RTZ**',
+    head: 'ケース | 実測（ANGLE Metal / M1 Max） | f32 | fp16 RN | fp16+切り捨て | **fp16 RTZ**',
     what: '規定した値の並びを 4 つのモデルで積んだ結果',
     fn: ['blendF32', 'blendF16', 'blendF16FlushSource', 'blendF16TruncateToZero'],
     skipCols: {
       0: 'ケース名（数ではない）',
+      // 2c-xii: 見出しに機体を入れた。「実測」とだけ書くと、**どのラスタライザの実測かが
+      // 表の中に無い** ── 表 3 が示すとおり、この列は SwiftShader では 4 セル違う値になる。
       1: 'GPU の読み値（`blendProbe`）── node では再現できない。'
-        + ' どのモデルと一致するかは `blendModel.test.ts` と `OBSERVED_BLEND_MODEL` が見る',
+        + ' どのモデルと一致するかは `blendModel.test.ts` と `RENDERER_BLEND_MODELS` が見る',
     },
     cells: [0, 1, 2, 3, 4, 5].flatMap((row) =>
       [0, 1, 2, 3].map((mi) => ({
@@ -846,6 +848,7 @@ const EXCLUDED: readonly Excluded[] = [
   { file: 'src/core/framingEnvelope.ts', table: 10, head: '標本 | d | 成分 | M=4096 | M=65536 | 本物か', kind: 'iteration-cost', why: '`d` を 0.005 刻みで 1001 点掃いた表（M = 65536 込み）' },
   { file: 'src/core/framingEnvelope.ts', table: 11, head: '標本 | 下回った点 | 最悪 | 不足', kind: 'iteration-cost', why: '`envelopeFor` が厳密値を下回る点。0.005 刻み 1001 点 × 6 標本で、1 セルあたり 28〜32 秒' },
   { file: 'src/image/blendModel.ts', table: 1, head: 'モデル | 仮定 | `blendF32` / `blendF16` / `blendF16FlushSource`', kind: 'non-numeric', why: '3 つのモデルの仮定を並べた対照表。数が 1 つも無く、列は文である' },
+  { file: 'src/image/blendModel.ts', table: 3, head: 'ケース | ANGLE Metal / M1 Max | SwiftShader', kind: 'gpu-browser', why: '2 つのラスタライザの `blendProbe` 読み値。**どちらの列も GPU でしか出ない**（node には丸めモードが無い）' },
   { file: 'src/image/columnLine.ts', table: 1, head: '入力（同一幾何・深度 378） | 位相を除いた残差', kind: 'gpu-browser', why: '位相を除いた残差。実 GPU の加算合成の読み戻しで、node では作れない' },
   { file: 'src/image/spriteGain.ts', table: 1, head: 's0 | S = k·s0 | gainFor | 誤差', kind: 'historical', why: '`gainFor` の**クランプを入れる前**の式の値。現在の export では `MIN_CALIBRATED_S0` で潰れる（写経すると `x/x`）' },
   { file: 'src/image/spriteGain.ts', table: 2, head: '構成 | `gain · Σw`（1.0 なら較正どおり）', kind: 'historical', why: '`gain · Σw` の実測。Phase 1b の線経路（畳み前）の構成で、現在の `linePoints` では作れない' },
@@ -883,7 +886,8 @@ const EXCLUDED: readonly Excluded[] = [
  * 被覆検査は「表を足したら除外を 1 行足す」で永久に通る。
  * 増やすときはこの数も同じ PR で上げること（差分に出る）。
  */
-const EXPECTED_EXCLUDED = 50;
+// 2c-xii で 50 → 51。`blendModel.ts` の表 3（2 ラスタライザの実測比較）を足したぶん。
+const EXPECTED_EXCLUDED = 51;
 
 /** **台帳のラチェット。** 減らすならこの数も同じ PR で下げること */
 const EXPECTED_LEDGER_CELLS = 96;

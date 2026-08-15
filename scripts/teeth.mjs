@@ -211,7 +211,7 @@ const MUTATIONS = [
 
   // ---- Phase 2c-viii（主張の後退を止める）----
   //
-  // **台帳で唯一、テストそのものを壊す変異である。** 他の 53 本は `src/` の実装を壊して
+  // **台帳で唯一、テストそのものを壊す変異である。** 他の 63 本は `src/` の実装を壊して
   // 「テストが落ちるか」を見るが、この 1 本が守っているのは**テストの幅**のほうで、
   // だから壊す対象がテストになる。
   //
@@ -339,6 +339,25 @@ const MUTATIONS = [
   { phase: '2b', name: '判定の許容を最小の分離幅より広げる（2 モデルが同時に一致する）', observed: 1,
     file: 'src/image/blendModel.ts',
     find: '  tolerance = 1e-6,', replace: '  tolerance = 1e-2,' },
+  // 2c-xii: renderer → 丸めモードの表。**2b の `OBSERVED_BLEND_MODEL` には歯が 1 本も無かった**
+  //（台帳の blendModel 変異 4 本は丸め・ties・暗い側・許容だけを触っていた）。
+  // 表にした以上、「どの機体がどのモデルか」は歯の在る主張でなければならない。
+  { phase: '2c-xii', name: 'Metal の丸めモードを SwiftShader のもの（f16）に取り違える', observed: 1,
+    file: 'src/image/blendModel.ts',
+    find: "    match: 'Apple M1 Max',\n    model: 'f16-rtz',",
+    replace: "    match: 'Apple M1 Max',\n    model: 'f16'," },
+  // **既定値へ落ちる形**を塞ぐ。`null` を返さず先頭のモデルを返すようにすると、
+  // 測っていない機体で「当たった」と言えるようになる（`classifyBlend` が
+  // 「いちばん近いモデル」を返さないのと同じ穴）。
+  { phase: '2c-xii', name: '未知のラスタライザに既定値を返す（測っていない機体で当たったと言える）', observed: 2,
+    file: 'src/image/blendModel.ts',
+    find: '  return null;\n}', replace: "  return 'f16-rtz';\n}" },
+  // **広げる方向の歯**（2c-xii）。上の 2 本は*狭める／取り違える*方向にしか効かない ──
+  // 独立監査 C が `'Apple M1 Max'` → `'Metal'` の 1 語で 462 件すべてを緑のまま通した。
+  // 1 台の実測を GPU 族へ拡張するのは、測っていない機体について「当たった」と言うことである。
+  { phase: '2c-xii', name: '照合を機種から族へ広げる（M1 Max の実測を Apple 全体の主張にする）', observed: 1,
+    file: 'src/image/blendModel.ts',
+    find: "    match: 'Apple M1 Max',", replace: "    match: 'Metal'," },
   { phase: '2b', name: '光過敏の配慮が回転へ届かない（2a まで実際にこうだった）', observed: 2,
     file: 'src/scene/lensScene.ts',
     find: '    if (!this.frozen && !this.reducedMotion) advancePhases(this.phases, d, dt);',
@@ -533,7 +552,7 @@ function ranTests(out) {
  * 3 つ組が既存と一致する変異は、本数だけ増やして守るものを増やさない。
  * 下の重複検査が機械で見る。
  */
-const EXPECTED_MUTATIONS = 62;
+const EXPECTED_MUTATIONS = 65;
 
 if (MUTATIONS.length < EXPECTED_MUTATIONS) {
   console.error(
@@ -595,6 +614,9 @@ const EXPECTED_IDS = [
   '2b / 最近接偶数を「常に上へ」にする（ties-to-even を落とす） → src/image/blendModel.ts',
   '2b / 二値ケースの暗い側を正規数にする（非正規域を問わなくなる） → src/image/blendModel.ts',
   '2b / 判定の許容を最小の分離幅より広げる（2 モデルが同時に一致する） → src/image/blendModel.ts',
+  '2c-xii / Metal の丸めモードを SwiftShader のもの（f16）に取り違える → src/image/blendModel.ts',
+  '2c-xii / 未知のラスタライザに既定値を返す（測っていない機体で当たったと言える） → src/image/blendModel.ts',
+  '2c-xii / 照合を機種から族へ広げる（M1 Max の実測を Apple 全体の主張にする） → src/image/blendModel.ts',
   '2b / 光過敏の配慮が回転へ届かない（2a まで実際にこうだった） → src/scene/lensScene.ts',
   '2b / 配慮を測定用の凍結と共用する（測定が終わると配慮が解ける） → src/scene/lensScene.ts',
   '2b / 色場 `image+mean` を恒等にする（G12 が同じ絵を 2 回測る） → src/scene/lensScene.ts',
@@ -697,7 +719,7 @@ const EXPECTED_IDS = [
  * これで「締めて下げる」の原資が無くなる。**ただし塞いだのは原資であって経路ではない**
  * ── 実測が本当に増えた PR では、また同じことができる。
  */
-const EXPECTED_OBSERVED_TOTAL = 151;
+const EXPECTED_OBSERVED_TOTAL = 155;
 
 {
   const bad = MUTATIONS.filter((m) => !Number.isInteger(m.observed) || m.observed < 1);
@@ -774,8 +796,10 @@ function parseShardSpec(spec) {
  */
 const argv = process.argv.slice(2);
 // **「フラグが在る」と「値が在る」を分けて持つ。** 一緒にすると `--shard`（値なし）が
-// 「分割なし」に化けて、**全 57 本を黙って回す** ── 安全側ではあるが、CI で分割が
-// 効いていないことに気づけない（3 シャードが同じ 57 本を回して 3 倍の時間で緑になる）。
+// 「分割なし」に化けて、**台帳の全部を黙って回す** ── 安全側ではあるが、CI で分割が
+// 効いていないことに気づけない（3 シャードが同じ本数を回して 3 倍の時間で緑になる）。
+// （本数を書かない: ここは台帳が何本でも成り立つ話で、書くと台帳が伸びるたびに嘘になる。
+//  実際 2c-xii まで「57 本」と書いたまま 62 本になっていた。）
 let shardSeen = false;
 let shardSpec;
 const positional = [];
