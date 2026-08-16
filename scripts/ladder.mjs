@@ -666,8 +666,51 @@ async function runTeeth(page, context, gl) {
  * そこは人が書くしかない。
  */
 const BUDGET_NEAR_K = 3;
-/** **減ったら赤**。増えたらここを上げてから通す（`teeth.mjs` の `observed` と同じ規律） */
-const EXPECTED_TOOTHED_BUDGETS = 6;
+/**
+ * 位相モデルの前提の予算（`collapseRow`）。**中間グレーで水準 0.5% ≈ ΔE00 0.15** で、
+ * 前提が守っている行の予算（`ΔE00 ≤ 2.0`）の 8% 未満 ── 由来は当該行の doc。
+ */
+const PHASE_BIAS_LIMIT = 0.005;
+/**
+ * 「位相で割ると目標へ近づく」倍率の下限（`collapseRow`）。
+ * **故障側は厳密に 1・実測の最小は 4.71** なので、その間の丸い値。由来は当該行の doc。
+ */
+const PHASE_GAIN_MIN = 2;
+/**
+ * **減ったら赤**。増えたらここを上げてから通す（`teeth.mjs` の `observed` と同じ規律）。
+ *
+ * ## 6 → 5 へ下げた（Phase 2c-xiii）。**下げた理由を書く義務がここに在る**
+ *
+ * 2c-xii の 6 本のうち 2 本は `G8a/deltaE`（`nophase` 比 2.90）と
+ * `G9/deltaE`（同 **1.06「余裕僅少」**）だった。この 2 本は
+ * **どちらも「割らなければ予算を外れる」という間接的な守り方**で、
+ * §7.10 の型 5（構成を書かずに数だけ置く）に近い脆さを持っていた ──
+ * 実際 `G9/deltaE` の歯は **HIGH にしか無い**。BALANCED では割らなくても
+ * raw が 1.3684 で予算 3.0 の内側に居るので、`nophase` は素通りする。
+ * `--budgets` は既定で HIGH を回すので、**在りもしない歯を 1 本数えていた**。
+ *
+ * → `G8G9/phaseGain`（比 2.00・故障側が**構造的に厳密 1**）へ置き換えた。
+ * 新しい 1 本はティアにも `d` にも依らない。**歯の質は上がり、本数は減った。**
+ *
+ * ## なぜ 6 に戻せないか（試した上で書く）
+ *
+ * 判定の条件 2「その id で落ちたのがその行だけ」により、`phaseGain` を
+ * 同じ id へ足すと `G8a/deltaE`・`G9/deltaE` は単独犯でなくなる。戻す道は 2 つあり、
+ * **どちらも採らなかった**:
+ *
+ *   1. `phaseGain` を G8b/G9 だけに足す（本数は 6 のまま）── だが「G8a は予算が
+ *      既に守っているから要らない」という理由が**実測値が予算の上に居ることに依存する**。
+ *      ティアで壊れる守り方を残すことになり、このフェーズが直した当のものである。
+ *   2. `deltaE` だけを落とす故障を足す ── **`G9` では原理的に作れない。**
+ *      raw 3.1668 が予算 3.0 のすぐ上なので、3.0 を破るだけの水準誤差を入れると
+ *      比は必ず 1.06 以下へ落ち、`phaseGain` も道連れになる。
+ *      `G8a` だけは窓 (2.0, 2.9) を狙えば作れるが、**指標に当てるための故障**である。
+ *
+ * 指標を書き換えて通すのは `EXPECTED_BUDGET_SITES` の doc が名指しで禁じた型なので、
+ * **数を下げて差分に出す**。`G8a/deltaE = 2.0` と `G9/deltaE = 3.0` は
+ * いま teeth gate に守られていない ── **緩い方へ動かしても誰も気づかない。**
+ */
+const EXPECTED_TOOTHED_BUDGETS = 5;
 /**
  * **分母のラチェット**（Phase 2c-viii）。
  *
@@ -681,7 +724,7 @@ const EXPECTED_TOOTHED_BUDGETS = 6;
  * `gauge` を外すのは「その数字はもう予算ではない」という主張なので、
  * 減らすならこの数も同じ PR で下げること ── 差分に出る。
  */
-const EXPECTED_BUDGET_SITES = 19;
+const EXPECTED_BUDGET_SITES = 21;
 
 function reportBudgets(baseRows, faultRuns) {
   const sites = new Map();
@@ -762,8 +805,10 @@ async function measureInPage(fault) {
   const { deltaE2000Linear } = await import('/src/color/deltaE.ts');
   const { primariesFor, linearToOklab } = await import('/src/color/oklab.ts');
   const { srgbToLinear, linearToCode } = await import('/src/color/srgb.ts');
-  const { spritePhaseFactor, centreFragmentOffset } = await import('/src/image/spriteGain.ts');
-  const { makeSpecimen0, REGIONS, RAMP_CODES } = await import('/src/image/fixture.ts');
+  const { spritePhaseFactor, centreFragmentOffset, F: SPRITE_F } =
+    await import('/src/image/spriteGain.ts');
+  const { makeSpecimen0, REGIONS, RAMP_CODES, SPECIMEN_W, SPECIMEN_H } =
+    await import('/src/image/fixture.ts');
   const { compressStrengthFor } = await import('/src/core/compress.ts');
   const P = primariesFor('srgb');
   const dE = (a, b) => deltaE2000Linear(P, a, b);
@@ -836,7 +881,11 @@ async function measureInPage(fault) {
   out.G0 = { corners, ok: corners.every((c) => c[0] === 0 && c[1] === 0 && c[2] === 0) };
 
   // ---------- G1: アスペクト・充填・基準点の重心
-  out.G1 = { aspect: s2.gridW / s2.gridH, fill, markers: [] };
+  out.G1 = {
+    aspect: s2.gridW / s2.gridH, gridW: s2.gridW, gridH: s2.gridH,
+    imageAspect: SPECIMEN_W / SPECIMEN_H, imageW: SPECIMEN_W, imageH: SPECIMEN_H,
+    fill, markers: [],
+  };
   for (const m of REGIONS.markers) {
     const c = toBuf(m.x + m.w / 2, m.y + m.h / 2, fill);
     const half = 14;
@@ -895,27 +944,68 @@ async function measureInPage(fault) {
      */
     const pxPerImage = (BUF.w * f2.x) / W;
     const radImage = L.sceneStats().spritePx / 2 / pxPerImage;
-    const yLo = 64 + radImage;
-    const yHi = R.y + R.h - radImage;
-    const measurable = yHi - yLo > 1;
-    const RAMP_INSET = {
-      x0: 0.35, x1: 0.65,
-      y0: (yLo - R.y) / R.h, y1: (yHi - R.y) / R.h,
+    /**
+     * **窓は段ごとに導く**（Phase 2c-xiii）。
+     *
+     * 2c-xii まで、ここは「マーカーの下端 `y = 64` より下」という**全 8 段に共通の窓**
+     * だった。ところが `REGIONS.markers` の 4 個は **x ∈ [0, 96] にしか無く、
+     * 第 1 段（x ∈ [0, 128]）にしか重なっていない**。残り 7 段は上に何も無いのに
+     * 64 px ぶん退いていたので、窓の高さは `80 − 64 − 2·rad` しか残らない ──
+     * HIGH（rad 5.21）では 5.6 px 生き残るが、**BALANCED（rad 7.88）では空**になり、
+     * 2 経路とも「測れない」で赤になっていた（2c-xii の実測）。
+     * **窓が HIGH の格子に合わせて掘られていた**とはこのことである。
+     *
+     * → 段ごとに、**自分の矩形を rad で侵食し、重なるマーカーを避ける**形へ変える。
+     * 左右の隣は別のコードの段なので、そこからも rad 退く（`0.35/0.65` の手置きを廃す）。
+     * 上は画像の外＝背景（点が無い＝光が欠ける）なので、やはり rad 退く。
+     * マーカーの避け方は**右へ寄る**／**下へ降りる**の 2 通りあるので、
+     * 面積の大きいほうを取る ── 第 1 段は「右へ寄る」が勝ち、
+     * BALANCED でも 16.2 × 64.2 画像px 残る。**窓を答えが通るまで詰めるのではなく、
+     * 幾何から導いた結果として広がる**（§7.6）。
+     */
+    const stepW = R.w / 8;
+    const stepWindow = (i) => {
+      const sx0 = R.x + i * stepW, sx1 = sx0 + stepW;
+      const over = REGIONS.markers.filter(
+        (m) => m.x < sx1 && m.x + m.w > sx0 && m.y < R.y + R.h && m.y + m.h > R.y);
+      const right = over.length ? Math.max(...over.map((m) => m.x + m.w)) : sx0;
+      const below = over.length ? Math.max(...over.map((m) => m.y + m.h)) : R.y;
+      const mk = (x0, y0) => {
+        const w = { x0: x0 + radImage, x1: sx1 - radImage,
+          y0: y0 + radImage, y1: R.y + R.h - radImage };
+        w.area = Math.max(0, w.x1 - w.x0) * Math.max(0, w.y1 - w.y0);
+        return w;
+      };
+      const best = [mk(Math.max(sx0, right), R.y), mk(sx0, Math.max(R.y, below))]
+        .sort((a, b) => b.area - a.area)[0];
+      best.ok = best.x1 - best.x0 > 1 && best.y1 - best.y0 > 1;
+      return best;
     };
-    const steps = [];
+    const steps = []; const wins = [];
     for (let i = 0; i < 8; i++) {
-      const reg = { x: R.x + i * 128, y: R.y, w: 128, h: R.h };
-      const mm = await regionMean(reg, f2, RAMP_INSET);
-      const ty = Math.round((yLo + yHi) / 2);
-      steps.push({ code: RAMP_CODES[i], measured: mm, deltaE: dE(mm, truthAt(reg.x + 64, ty)) });
+      const w = stepWindow(i);
+      wins.push(w);
+      if (!w.ok) { steps.push({ code: RAMP_CODES[i], measured: null, deltaE: Infinity }); continue; }
+      const reg = { x: w.x0, y: w.y0, w: w.x1 - w.x0, h: w.y1 - w.y0 };
+      const mm = await regionMean(reg, f2, { x0: 0, x1: 1, y0: 0, y1: 1 });
+      const tx = Math.round((w.x0 + w.x1) / 2), ty = Math.round((w.y0 + w.y1) / 2);
+      steps.push({ code: RAMP_CODES[i], measured: mm, deltaE: dE(mm, truthAt(tx, ty)) });
     }
-    let monotone = true;
-    for (let i = 1; i < steps.length; i++) if (!(steps[i].measured[1] > steps[i - 1].measured[1])) monotone = false;
+    const measurable = wins.every((w) => w.ok);
+    let monotone = measurable;
+    if (measurable) {
+      for (let i = 1; i < steps.length; i++) if (!(steps[i].measured[1] > steps[i - 1].measured[1])) monotone = false;
+    }
+    /** 最も狭い段の窓を報告する ── 「どこが先に閉じるか」が読めるようにする */
+    const tight = wins.reduce((a, b) => (a.area <= b.area ? a : b));
+    const r1 = (v) => Math.round(v * 10) / 10;
     out['G3_' + path] = {
       worstDeltaE: Math.max(...steps.map((s) => s.deltaE)), monotone, measurable,
-      window: [Math.round(yLo * 10) / 10, Math.round(yHi * 10) / 10],
+      window: [r1(tight.y0), r1(tight.y1)],
+      windowX: [r1(tight.x0), r1(tight.x1)],
+      tightStep: wins.indexOf(tight),
       radImage: Math.round(radImage * 100) / 100,
-      codes: steps.map((s) => linearToCode(s.measured[1])),
+      codes: steps.map((s) => (s.measured ? linearToCode(s.measured[1]) : '—')),
     };
 
     // G4: 彩度ホイール 24 パッチ
@@ -1031,6 +1121,62 @@ async function measureInPage(fault) {
     const quad = [];
     for (let i = 0; i < 4; i++) quad.push([p[i * 4], p[i * 4 + 1], p[i * 4 + 2]]);
     const rowSpread = Math.abs((quad[0][0] + quad[1][0]) / 2 - (quad[2][0] + quad[3][0]) / 2);
+    /**
+     * **前提を、位相モデル自身の言葉で書く**（Phase 2c-xiii）。
+     *
+     * 2c-xii まで、前提は「上下 2 行が **1 コード**以内で一致すること」だった。
+     * これは **8 ビットのコード差**という単位で書かれているが、
+     * ある幾何のずれが何コードの差になるかは**スプライトの太さと峰の高さで変わる**ので、
+     * ティアが変われば同じ幾何でも通ったり落ちたりする。実測（2c-xiii）:
+     *
+     * | | 中心のずれ δ | 上下差 | 判定（旧） |
+     * |---|---|---|---|
+     * | BALANCED `d=1` | +0.0301 px | **2 コード** | ❌ |
+     * | HIGH `d=1` | −0.0124 px | 1 コード | ✅ |
+     *
+     * **どちらも 0.03 px 以内に中心が乗っている** ── 幾何は両ティアで健全で、
+     * 落ちていたのは単位のほうだった。
+     *
+     * ## 何を測れば前提になるのか
+     *
+     * 再構成が割るのは `spritePhaseFactor(ox, 0.5, S)` ＝「4 つの近傍フラグメントが
+     * 中心から厳密に 0.5 px」を仮定した値である。中心が δ ずれると 2 行は
+     * `exp(−F(0.5∓δ)²/S²)` を読むが、**再構成が使うのはその平均**なので
+     *
+     * ```
+     * 平均 / 中心を仮定した値 = exp(−F·δ²/S²) · cosh(F·δ/S²)
+     * ```
+     *
+     * ── **δ の 2 次**でしか効かない。上下差は δ の 1 次で効くので、
+     * 「上下差が何コードか」は前提の厳しさを**過大に**見積もる量である。
+     *
+     * → δ をスプライト自身のガウシアン（`spritePhaseFactor` と同じ `F`）で 2 行から逆算し、
+     * **位相係数に乗る誤差そのもの**を前提にする。実測は BALANCED `d=1` で **0.061%**、
+     * HIGH `d=1` で **0.005%** ── どちらも下の予算の 1/8 以下である。
+     *
+     * ## 予算の由来
+     *
+     * `PHASE_BIAS_LIMIT = 0.5%`。中間グレーで水準 0.5% のずれは **ΔE00 ≈ 0.15**、
+     * この行自身の予算 `ΔE00 ≤ 2.0` の **8% 未満**である ──
+     * 「位相モデルの寄与がその行の予算に対して無視できる」を満たす最大の丸い値として置く。
+     * **通った値に合わせて緩めたのではない**（実測はこの 1/8 以下）。
+     *
+     * ## 残っている穴（塞いでいないので書く）
+     *
+     * 見ているのは**縦軸だけ**である。`d=1`/`d=0.5` では図が横に伸びた線なので
+     * 横の差は信号（列ごとに色が違う）であり、前提にはならない。
+     * だが **`d=0` では図は 1 点なので、横にも同じ前提が要る** ── そこは測っていない。
+     * 下の `colBias` は**採点していない参考値**として note に出す（型 5 を作らないため）。
+     */
+    const chMean = (a, b) => [0, 1, 2].reduce((t, ch) => t + (lin(a[ch]) + lin(b[ch])) / 2, 0) / 3;
+    const S = s.spritePx;
+    const biasOf = (loMean, hiMean) => {
+      if (!(loMean > 0) || !(hiMean > 0) || !(S > 0)) return { d: NaN, bias: NaN };
+      const d = (-(S * S) * Math.log(loMean / hiMean)) / (2 * SPRITE_F);
+      return { d, bias: Math.exp((-SPRITE_F * d * d) / (S * S)) * Math.cosh((SPRITE_F * d) / (S * S)) - 1 };
+    };
+    const rowBias = biasOf(chMean(quad[0], quad[1]), chMean(quad[2], quad[3]));
+    const colBias = biasOf(chMean(quad[0], quad[2]), chMean(quad[1], quad[3]));
     const ox = s.linePoints <= 1 ? off.x : 0;
     // 故障 `nophase`: 1c までの読み方（位相を割らない）へ戻す
     const phase = fault.nophase ? 1 : spritePhaseFactor(ox, off.y, s.spritePx);
@@ -1040,8 +1186,11 @@ async function measureInPage(fault) {
     collapse['d' + d] = {
       buffer: s.buffer, linePoints: s.linePoints, depth: s.modelledAdditionDepth,
       spritePx: s.spritePx, rowSpread, phase,
+      centreDy: rowBias.d, phaseBias: rowBias.bias, colBias: colBias.bias,
       measuredCode: meas.map(linearToCode), reconCode: recon.map(linearToCode),
       targetCode: target.map(linearToCode), deltaE: dE(recon, target),
+      /** **割らなかったときの** ΔE00。「位相補正が実在する」を採点するのに要る（2c-xiii） */
+      rawDeltaE: dE(meas, target),
       levelPct: 100 * (recon[1] / target[1] - 1),
     };
   }
@@ -1554,8 +1703,41 @@ function scoreG14(r, { dependent }) {
 /** 生の測定から行を作る。**採点はここに集約する**（`enabledPasses()` のような自己参照を作らない） */
 function score(r, fault) {
   record('G0', '背景（四隅）', '厳密 0', JSON.stringify(r.G0.corners[0]), r.G0.ok);
-  record('G1', 'アスペクト（格子）', '1.6017（378/236）', r.G1.aspect.toFixed(4),
-    Math.abs(r.G1.aspect - 378 / 236) < 1e-9);
+  /**
+   * **ティア別の表を引かずに閉じる**（Phase 2c-xiii）。
+   *
+   * 2c-xii まで、この行の予算は `378/236` のベタ書きだった ── HIGH の格子である。
+   * BALANCED では実測 1.5987（251/157）になって落ちる。
+   *
+   * **`TIER_ANCHORS` から引くのは誤り**である。`out.G1.aspect` は
+   * `sceneStats().gridW / gridH` ＝ **作品の申告値**であり、ENV は既に
+   * `アンカー gridW`／`gridH` を同じ表と `Object.is` で突き合わせている。
+   * つまり表を引いた瞬間、この行は **ENV の 2 行に含意される恒真な行**になる ──
+   * 2c-xii が 2 つ潰したのと同じ型（§7.10）を、同じ道具に作り直すことになる。
+   *
+   * → 主張を**表に依らない不変量**へ書き換える。`fitGrid` は
+   * `cols·rows ≤ budget` の下で**相対アスペクト誤差を最小化**する探索なので、
+   * 「格子は標本の形を、整数の行数で届く粒度まで保つ」が言えるはずである。
+   * 行数 `rows` を固定すると `cols` は整数なので、届く相対粒度は `1/(rows·aspect)`；
+   * 予算はその**弱い側** `1/rows` に置く（`aspect > 1` なので必ず緩い側）。
+   *
+   * 実測（相対誤差 / 予算 `1/rows`）:
+   * BALANCED 0.00080 / 0.00637 ・ HIGH 0.00106 / 0.00424 ・ **ULTRA 0.00198 / 0.00317**。
+   * 3 ティアとも通り、最も苦しい ULTRA でも 1.6 倍の余裕がある
+   * （ULTRA は**まだ観測されていない**ので node の予測値からの計算である）。
+   *
+   * **これは ENV の 2 行に含意されない** ── ENV は「表の数と一致するか」を見るが、
+   * こちらは「その数が標本の形から出ているか」を見る。表ごと書き換えても落ちる。
+   */
+  const aspectErr = Math.abs(r.G1.aspect / r.G1.imageAspect - 1);
+  const aspectLimit = 1 / r.G1.gridH;
+  record('G1', 'アスペクト（格子が標本の形を保つ）',
+    `相対誤差 ≤ 1/${r.G1.gridH} = ${aspectLimit.toFixed(5)}`,
+    aspectErr.toFixed(5), aspectErr <= aspectLimit,
+    `格子 ${r.G1.gridW}×${r.G1.gridH} → ${r.G1.aspect.toFixed(4)}`
+    + ` / 標本 ${r.G1.imageW}×${r.G1.imageH} → ${r.G1.imageAspect.toFixed(4)}`
+    + ' / **ティア別の表を引かない** ── 引くと ENV のアンカー 2 行に含意される',
+    { site: 'G1/aspectErr', value: aspectErr, limit: aspectLimit, dir: 'le' });
   record('G1', '充填（一辺に接する）', 'fill.x = 0.86', r.G1.fill.x.toFixed(4),
     Math.abs(r.G1.fill.x - 0.86) < 1e-9);
   const worstMarker = Math.max(...r.G1.markers.map((m) => m.err));
@@ -1574,7 +1756,9 @@ function score(r, fault) {
     record('G3', `ランプ 8 段（${path}）`, 'ΔE00 ≤ 2.0',
       g3.measurable ? g3.worstDeltaE.toFixed(4) : '測れない（窓が空）',
       g3.measurable && g3.worstDeltaE <= 2.0,
-      `codes ${g3.codes.join(',')} / 窓 y∈[${g3.window[0]},${g3.window[1]}] / スプライト半径 ${g3.radImage} 画像px`,
+      `codes ${g3.codes.join(',')} / 最狭は第 ${g3.tightStep + 1} 段`
+      + ` x∈[${g3.windowX[0]},${g3.windowX[1]}] y∈[${g3.window[0]},${g3.window[1]}]`
+      + ` / スプライト半径 ${g3.radImage} 画像px`,
       g3.measurable ? { site: 'G3/deltaE', value: g3.worstDeltaE, limit: 2.0, dir: 'le' } : null);
     record('G3', `ランプの単調性（${path}）`, '厳密に単調増加', String(g3.monotone), g3.monotone);
     const g4 = r['G4_' + path];
@@ -1606,10 +1790,15 @@ function score(r, fault) {
   const c = r.collapse;
   const collapseRow = (id, key, label, budget) => {
     const g = c[key];
-    const premise = g.rowSpread <= 1;
-    record(id, `${label}: 位相モデルの前提（上下 2 行の一致）`, '≤ 1 コード',
-      String(g.rowSpread), premise, '',
-      { site: 'G8G9/rowSpread', value: g.rowSpread, limit: 1, dir: 'le' });
+    const premise = Number.isFinite(g.phaseBias) && Math.abs(g.phaseBias) <= PHASE_BIAS_LIMIT;
+    record(id, `${label}: 位相モデルの前提（中心のずれが位相係数に効かない）`,
+      `|位相係数の誤差| ≤ ${(PHASE_BIAS_LIMIT * 100).toFixed(1)}%`,
+      Number.isFinite(g.phaseBias) ? `${(g.phaseBias * 100).toFixed(4)}%` : '測れない',
+      premise,
+      `中心のずれ ${g.centreDy.toFixed(4)} px / スプライト ${g.spritePx.toFixed(2)} px`
+      + ` / 上下 ${g.rowSpread} コード（旧予算 ≤ 1）`
+      + ` / **横は採点していない**参考値 ${(g.colBias * 100).toFixed(4)}%`,
+      { site: 'G8G9/phaseBias', value: Math.abs(g.phaseBias), limit: PHASE_BIAS_LIMIT, dir: 'le' });
     record(id, `${label}（再構成した中心値）`, `ΔE00 ≤ ${budget}`, g.deltaE.toFixed(4),
       premise && g.deltaE <= budget,
       `生 ${g.measuredCode.join(',')} → ${g.reconCode.join(',')} / 目標 ${g.targetCode.join(',')}`
@@ -1617,6 +1806,52 @@ function score(r, fault) {
       + ` / 深度 ${g.depth} / 点 ${g.linePoints}`,
       // **前提が偽のときは予算の話にならない**ので gauge を出さない
       premise ? { site: `${id}/deltaE`, value: g.deltaE, limit: budget, dir: 'le' } : null);
+    /**
+     * **両側を見る ── 「割る物が実在する」**（Phase 2c-xiii）。
+     *
+     * ## なぜ足したか
+     *
+     * 2c-xii まで、「位相で割らねばならない」を守っていたのは**上の行の予算だけ**だった ──
+     * 割らなければ ΔE00 が予算を外れる、という間接的な守り方である。
+     * これは**ティアで壊れる**。実測（`raw` は割らなかったときの ΔE00）:
+     *
+     * | | 予算 | raw（BALANCED） | raw（HIGH） |
+     * |---|---|---|---|
+     * | `G8a` d=1 | 2.0 | 2.4629 ❌落ちる | 5.8032 ❌落ちる |
+     * | `G8b` d=0.5 | 2.0 | 0.7040 **素通り** | 1.7206 **素通り** |
+     * | `G9` d=0 | 3.0 | 1.3684 **素通り** | 3.1668 ❌落ちる |
+     *
+     * つまり **`nophase` を捕まえていたのは HIGH の `G8a`/`G9` だけ**で、
+     * BALANCED では `G8a` しか噛まず、`G8b` はどちらのティアでも一度も噛んでいない。
+     * `--budgets` が HIGH で `G9/deltaE` を **比 1.06「余裕僅少」**と印字していたのは
+     * この構図の端で、**その僅少はティアを変えると消える**。
+     *
+     * ## なぜ「割ると目標へ近づく」なのか
+     *
+     * 「割らなければ予算を外れる」は**6 セル中 3 セルで偽**なので主張にできない
+     * （`d=0.5` では補正が 3〜7% と小さく、割らなくても予算の内側に居る）。
+     * 事実として言えるのは**補正が効いている向きと大きさ**のほうである。
+     *
+     * `target` は標本の画素から独立に来るので、これは `x/x` ではない。
+     * そして **`nophase` の下ではこの比は構造的に厳密 1 になる**
+     * （割らなければ `recon` は `raw` そのもの）── ティアにも `d` にも依らない。
+     *
+     * ## 予算の由来
+     *
+     * `PHASE_GAIN_MIN = 2`。「割ると目標までの距離が**半分以下**になる」。
+     * 故障側の 1 と、実測の最小 **4.71**（HIGH `d=0.5`）のちょうど間の丸い値で、
+     * **どちらにも寄せていない**（故障から 2 倍・実測から 2.4 倍）。
+     */
+    const gain = g.deltaE > 0 ? g.rawDeltaE / g.deltaE : Infinity;
+    record(id, `${label}: 位相補正が実在する（割ると目標へ近づく）`,
+      `割らない ΔE00 / 割った ΔE00 ≥ ${PHASE_GAIN_MIN}`,
+      Number.isFinite(gain) ? gain.toFixed(2) : '∞（割った側が厳密 0）',
+      gain >= PHASE_GAIN_MIN,
+      `割らない ${g.rawDeltaE.toFixed(4)} → 割った ${g.deltaE.toFixed(4)}`
+      + ` / 位相 ${g.phase.toFixed(6)}（補正 ${((1 / g.phase - 1) * 100).toFixed(2)}%）`
+      + ' / **割らなければこの比は厳密に 1** ── 予算の外側かどうかには依らない',
+      Number.isFinite(gain)
+        ? { site: 'G8G9/phaseGain', value: gain, limit: PHASE_GAIN_MIN, dir: 'ge' } : null);
   };
   collapseRow('G8a', 'd1', 'd=1 列平均線', 2.0);
   collapseRow('G8b', 'd0.5', 'd=0.5 線', 2.0);
